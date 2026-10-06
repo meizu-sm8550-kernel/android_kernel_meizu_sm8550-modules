@@ -5,6 +5,11 @@ $(info "CAMERA_KERNEL_ROOT is: $(CAMERA_KERNEL_ROOT)")
 $(info "KERNEL_ROOT is: $(KERNEL_ROOT)")
 endif
 
+# Keep every object in this composite module on the same userspace ABI.
+ifeq ($(CONFIG_SPECTRA_MEIZU_M2468),y)
+ccflags-y += -DCAM_FLASH_M2468_ABI
+endif
+
 # Include Architecture configurations
 ifeq ($(CONFIG_ARCH_WAIPIO), y)
 include $(CAMERA_KERNEL_ROOT)/config/waipio.mk
