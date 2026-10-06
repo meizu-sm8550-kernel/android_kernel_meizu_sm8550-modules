@@ -483,6 +483,7 @@ struct goodix_ic_config {
 };
 
 struct goodix_ts_core {
+	bool is_m2468;
 	int init_stage;
 	struct platform_device *pdev;
 	struct goodix_fw_version fw_version;
@@ -690,6 +691,7 @@ int goodix_fw_update_init(struct goodix_ts_core *core_data);
 void goodix_fw_update_uninit(void);
 int goodix_do_fw_update(struct goodix_ic_config *ic_config, int mode);
 
+bool goodix_is_m2468(struct device_node *node);
 int goodix_get_ic_type(struct device_node *node);
 int gesture_module_init(void);
 void gesture_module_exit(void);

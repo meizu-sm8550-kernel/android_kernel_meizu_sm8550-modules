@@ -634,7 +634,7 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd);
  * scheduled on the same thread or queued.
  *
  */
-void dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags);
+int dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags);
 
 /**
  * dsi_ctrl_cmd_tx_trigger() - Trigger a deferred command.
@@ -945,5 +945,5 @@ void dsi_ctrl_toggle_error_interrupt_status(struct dsi_ctrl *dsi_ctrl, bool enab
  * dsi_ctrl_transfer_cleanup() - Clean up post command transfer
  * @dsi_ctrl:                 DSI controller handle.
  */
-void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl);
+int dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl);
 #endif /* _DSI_CTRL_H_ */

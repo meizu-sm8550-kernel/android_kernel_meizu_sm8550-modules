@@ -221,27 +221,10 @@ void dsi_rect_intersect(const struct dsi_rect *r1,
 	}
 }
 
-int dsi_display_set_backlight(struct drm_connector *connector,
-		void *display, u32 bl_lvl)
+u32 dsi_display_bl_to_panel(struct dsi_panel *panel, u32 bl_lvl)
 {
-	struct dsi_display *dsi_display = display;
-	struct dsi_panel *panel;
 	u32 bl_scale, bl_scale_sv;
 	u64 bl_temp;
-	int rc = 0;
-
-	if (dsi_display == NULL || dsi_display->panel == NULL)
-		return -EINVAL;
-
-	panel = dsi_display->panel;
-
-	mutex_lock(&panel->panel_lock);
-	if (!dsi_panel_initialized(panel)) {
-		rc = -EINVAL;
-		goto error;
-	}
-
-	panel->bl_config.bl_level = bl_lvl;
 
 	/* scale backlight */
 	bl_scale = panel->bl_config.bl_scale;
@@ -267,13 +250,44 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	DSI_DEBUG("bl_scale = %u, bl_scale_sv = %u, bl_lvl = %u\n",
 		bl_scale, bl_scale_sv, (u32)bl_temp);
 
-	rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
-	if (rc)
-		DSI_ERR("unable to set backlight\n");
+	return (u32)bl_temp;
+}
 
-error:
+int dsi_display_set_backlight(struct drm_connector *connector,
+		void *display, u32 bl_lvl)
+{
+	struct dsi_display *d = display;
+	struct dsi_panel *panel;
+	int rc = 0, first = 0;
+
+	if (!d || !d->panel)
+		return -EINVAL;
+	panel = d->panel;
+	if (panel->note_hbm.supported) {
+		if (bl_lvl > 4095)
+			return -ERANGE;
+		mutex_lock(&d->display_lock);
+	}
+	mutex_lock(&panel->panel_lock);
+	if (!dsi_panel_initialized(panel)) {
+		rc = -EINVAL;
+		goto out;
+	}
+	panel->bl_config.bl_level = bl_lvl;
+	if (panel->note_hbm.supported) {
+		panel->note_hbm.state.requested = bl_lvl;
+		if (!bl_lvl) {
+			mutex_unlock(&panel->panel_lock);
+			first = dsi_note_hbm_quiesce(d);
+			mutex_lock(&panel->panel_lock);
+		}
+	}
+	rc = dsi_panel_set_backlight(panel, dsi_display_bl_to_panel(panel, bl_lvl));
+out:
 	mutex_unlock(&panel->panel_lock);
-	return rc;
+	if (panel->note_hbm.supported)
+		mutex_unlock(&d->display_lock);
+	return first ? first : rc;
 }
 
 static int dsi_display_cmd_engine_enable(struct dsi_display *display)
@@ -1015,8 +1029,10 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 	}
 
 	/* Handle Panel failures during display disable sequence */
-	if (rc <=0)
+	if (rc <= 0) {
+		dsi_note_hbm_invalidate(panel, false);
 		atomic_set(&panel->esd_recovery_pending, 1);
+	}
 	else
 		/* Enable error interrupts post an ESD success */
 		dsi_display_toggle_error_interrupt_status(dsi_display, true);
@@ -1343,6 +1359,12 @@ int dsi_display_set_power(struct drm_connector *connector,
 		return -EINVAL;
 	}
 
+	mutex_lock(&display->display_lock);
+	if (power_mode == SDE_MODE_DPMS_LP1 || power_mode == SDE_MODE_DPMS_LP2) {
+		rc = dsi_note_hbm_quiesce(display);
+		if (rc)
+			goto out;
+	}
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
 		rc = dsi_panel_set_lp1(display->panel);
@@ -1352,12 +1374,13 @@ int dsi_display_set_power(struct drm_connector *connector,
 		break;
 	case SDE_MODE_DPMS_ON:
 		if ((display->panel->power_mode == SDE_MODE_DPMS_LP1) ||
-			(display->panel->power_mode == SDE_MODE_DPMS_LP2))
+			(display->panel->power_mode == SDE_MODE_DPMS_LP2) ||
+			display->panel->note_hbm.low_power)
 			rc = dsi_panel_set_nolp(display->panel);
 		break;
 	case SDE_MODE_DPMS_OFF:
 	default:
-		return rc;
+		goto out;
 	}
 
 	SDE_EVT32(display->panel->power_mode, power_mode, rc);
@@ -1367,6 +1390,8 @@ int dsi_display_set_power(struct drm_connector *connector,
 	if (!rc)
 		display->panel->power_mode = power_mode;
 
+out:
+	mutex_unlock(&display->display_lock);
 	return rc;
 }
 
@@ -3390,7 +3415,7 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 {
 	struct dsi_display *display;
 	struct dsi_display_ctrl *ctrl;
-	int i, rc = 0;
+	int i, rc = 0, done_rc;
 
 	if (!host || !cmd) {
 		DSI_ERR("Invalid params\n");
@@ -3398,6 +3423,8 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 	}
 
 	display = to_dsi_display(host);
+	if (display->panel->note_hbm.supported && display->ctrl_count != 1)
+		return -EOPNOTSUPP;
 
 	/* Avoid sending DCS commands when ESD recovery is pending */
 	if (atomic_read(&display->panel->esd_recovery_pending)) {
@@ -3412,7 +3439,7 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 				ctrl->ctrl->cmd_len = 0;
 			}
 		}
-		return 0;
+		return display->panel->note_hbm.supported ? -EIO : 0;
 	}
 
 	rc = dsi_display_wake_up(display);
@@ -3430,6 +3457,8 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 	}
 
 	dsi_display_set_cmd_tx_ctrl_flags(display, cmd);
+	if (display->panel->note_hbm.supported)
+		cmd->ctrl_flags &= ~DSI_CTRL_CMD_ASYNC_WAIT;
 
 	if (cmd->ctrl_flags & DSI_CTRL_CMD_BROADCAST) {
 		rc = dsi_display_broadcast_cmd(display, cmd);
@@ -3450,7 +3479,9 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 		if (rc)
 			DSI_ERR("[%s] cmd transfer failed, rc=%d\n", display->name, rc);
 
-		dsi_ctrl_transfer_unprepare(display->ctrl[idx].ctrl, cmd->ctrl_flags);
+		done_rc = dsi_ctrl_transfer_unprepare(display->ctrl[idx].ctrl, cmd->ctrl_flags);
+		if (display->panel->note_hbm.supported && !rc)
+			rc = done_rc;
 	}
 
 error:
@@ -5589,6 +5620,9 @@ static int dsi_display_pre_release(void *data)
 
 	display = (struct dsi_display *)data;
 	mutex_lock(&display->display_lock);
+	mutex_lock(&display->panel->panel_lock);
+	dsi_note_hbm_invalidate(display->panel, false);
+	mutex_unlock(&display->panel->panel_lock);
 	display->hw_ownership = false;
 	mutex_unlock(&display->display_lock);
 
@@ -5854,6 +5888,11 @@ error_ctrl_deinit:
 	(void)dsi_display_debugfs_deinit(display);
 error:
 	mutex_unlock(&display->display_lock);
+	if (!rc) {
+		int note_rc = dsi_note_hbm_bind(display);
+		if (note_rc)
+			DSI_ERR("Note HBM sysfs unavailable: %d\n", note_rc);
+	}
 	return rc;
 }
 
@@ -5882,6 +5921,7 @@ static void dsi_display_unbind(struct device *dev,
 		return;
 	}
 
+	dsi_note_hbm_unbind(display);
 	mutex_lock(&display->display_lock);
 
 	rc = dsi_display_mipi_host_deinit(display);
@@ -6125,6 +6165,8 @@ int dsi_display_dev_remove(struct platform_device *pdev)
 		DSI_ERR("invalid display\n");
 		return -EINVAL;
 	}
+
+	dsi_note_hbm_unbind(display);
 
 	/* decrement ref count */
 	of_node_put(display->panel_node);
@@ -7805,6 +7847,10 @@ int dsi_display_set_mode(struct dsi_display *display,
 
 	mutex_lock(&display->display_lock);
 
+	rc = dsi_note_hbm_quiesce(display);
+	if (rc)
+		goto error;
+
 	adj_mode = *mode;
 	timing = adj_mode.timing;
 	adjust_timing_by_ctrl_count(display, &adj_mode);
@@ -7838,7 +7884,13 @@ int dsi_display_set_mode(struct dsi_display *display,
 			timing.h_active, timing.v_active, timing.refresh_rate,
 			adj_mode.priv_info->clk_rate_hz);
 
+	mutex_lock(&display->panel->panel_lock);
 	memcpy(display->panel->cur_mode, &adj_mode, sizeof(adj_mode));
+	if (display->panel->note_hbm.supported) {
+		display->panel->note_hbm.state.adfr_valid = false;
+		display->panel->note_hbm.state.generation++;
+	}
+	mutex_unlock(&display->panel->panel_lock);
 error:
 	mutex_unlock(&display->display_lock);
 	return rc;

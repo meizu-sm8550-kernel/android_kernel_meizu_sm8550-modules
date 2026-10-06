@@ -259,6 +259,8 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 	struct dsi_panel_reset_config *r_config = &panel->reset_config;
 	int i;
 
+	dsi_note_hbm_invalidate(panel, false);
+
 	if (!gpio_is_valid(r_config->reset_gpio))
 		goto skip_reset_gpio;
 
@@ -395,6 +397,8 @@ exit:
 static int dsi_panel_power_off(struct dsi_panel *panel)
 {
 	int rc = 0;
+
+	dsi_note_hbm_invalidate(panel, false);
 
 	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
 		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
@@ -638,6 +642,22 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	if (panel->host_config.ext_bridge_mode)
 		return 0;
 
+	if (panel->note_hbm.supported) {
+		struct note_hbm_state *s = &panel->note_hbm.state;
+
+		if (atomic_read(&panel->esd_recovery_pending))
+			return -EIO;
+		if (bl_lvl > 4095)
+			return -ERANGE;
+		if (bl_lvl && panel->note_hbm.low_power)
+			return -EOPNOTSUPP;
+		if (bl_lvl && (s->phase == NOTE_HBM_ON || s->phase == NOTE_HBM_ENABLING))
+			return 0; /* request retained upstream, no attempted/success update */
+		s->attempted = bl_lvl;
+		s->attempted_valid = true;
+		s->successful_valid = false;
+	}
+
 	DSI_DEBUG("backlight type:%d lvl:%d\n", bl->type, bl_lvl);
 	switch (bl->type) {
 	case DSI_BACKLIGHT_WLED:
@@ -656,6 +676,10 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = -ENOTSUPP;
 	}
 
+	if (panel->note_hbm.supported && !rc) {
+		panel->note_hbm.state.successful = bl_lvl;
+		panel->note_hbm.state.successful_valid = true;
+	}
 	return rc;
 }
 
@@ -1877,6 +1901,11 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+	"qcom,mdss-dsi-set-local-hbm-on-commands",
+	"qcom,mdss-dsi-set-local-hbm-off-commands",
+	"qcom,mdss-dsi-set-local-hbm-lv-commands",
+	"qcom,mdss-dsi-adfr-on-command",
+	"qcom,mdss-dsi-adfr-off-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1905,6 +1934,11 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+	"qcom,mdss-dsi-set-local-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-local-hbm-off-commands-state",
+	"qcom,mdss-dsi-set-local-hbm-lv-commands-state",
+	"qcom,mdss-dsi-adfr-on-command-state",
+	"qcom,mdss-dsi-adfr-off-command-state",
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -2484,6 +2518,29 @@ error:
 	return rc;
 }
 
+/* The Note default is in userspace brightness units, not handoff DBV. */
+static int dsi_panel_parse_default_brightness(struct dsi_panel *panel)
+{
+	struct dsi_parser_utils *utils = &panel->utils;
+	u32 value;
+	int rc;
+
+	panel->bl_config.brightness_default_level =
+		panel->bl_config.brightness_max_level;
+	if (strcmp(panel->name, "ILI7838E_TIANMA_MEIZU"))
+		return 0;
+	rc = utils->read_u32(utils->data, "qcom,mdss-brightness-default-level",
+		&value);
+	if (rc)
+		return 0;
+	if (value > panel->bl_config.brightness_max_level) {
+		DSI_ERR("[%s] invalid default brightness %u\n", panel->name, value);
+		return 0;
+	}
+	panel->bl_config.brightness_default_level = value;
+	return 0;
+}
+
 static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -2561,6 +2618,10 @@ static int dsi_panel_parse_bl_config(struct dsi_panel *panel)
 	} else {
 		panel->bl_config.brightness_max_level = val;
 	}
+
+	rc = dsi_panel_parse_default_brightness(panel);
+	if (rc)
+		goto error;
 
 	panel->bl_config.bl_inverted_dbv = utils->read_bool(utils->data,
 		"qcom,mdss-dsi-bl-inverted-dbv");
@@ -3731,6 +3792,7 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 	drm_panel_add(&panel->drm_panel);
 
 	mutex_init(&panel->panel_lock);
+	dsi_note_hbm_init(panel);
 
 	return panel;
 error:
@@ -3746,6 +3808,8 @@ void dsi_panel_put(struct dsi_panel *panel)
 	dsi_panel_esd_config_deinit(&panel->esd_config);
 
 	kfree(panel->avr_caps.avr_step_fps_list);
+	if (panel->note_hbm.supported)
+		kfree(panel->bl_config.dimming_bl_lut);
 	kfree(panel);
 }
 
@@ -4403,6 +4467,7 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	}
 
 	mutex_lock(&panel->panel_lock);
+	dsi_note_hbm_low_power(panel, true);
 	if (!panel->panel_initialized)
 		goto exit;
 
@@ -4436,6 +4501,7 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	}
 
 	mutex_lock(&panel->panel_lock);
+	dsi_note_hbm_low_power(panel, true);
 	if (!panel->panel_initialized)
 		goto exit;
 
@@ -4473,6 +4539,8 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
+	if (!rc)
+		dsi_note_hbm_low_power(panel, false);
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4824,6 +4892,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		}
 	}
 	panel->panel_initialized = true;
+	dsi_note_hbm_invalidate(panel, true);
 
 error:
 	mutex_unlock(&panel->panel_lock);
@@ -4862,6 +4931,7 @@ int dsi_panel_pre_disable(struct dsi_panel *panel)
 	}
 
 	mutex_lock(&panel->panel_lock);
+	dsi_note_hbm_invalidate(panel, false);
 
 	if (gpio_is_valid(panel->bl_config.en_gpio))
 		gpio_set_value(panel->bl_config.en_gpio, 0);
@@ -4888,6 +4958,7 @@ int dsi_panel_disable(struct dsi_panel *panel)
 	}
 
 	mutex_lock(&panel->panel_lock);
+	dsi_note_hbm_invalidate(panel, false);
 
 	/* Avoid sending panel off commands when ESD recovery is underway */
 	if (!atomic_read(&panel->esd_recovery_pending)) {
