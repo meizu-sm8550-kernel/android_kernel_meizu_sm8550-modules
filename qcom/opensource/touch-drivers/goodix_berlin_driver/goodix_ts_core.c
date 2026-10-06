@@ -1480,7 +1480,8 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 	core_data->input_dev = input_dev;
 	input_set_drvdata(input_dev, core_data);
 
-	input_dev->name = GOODIX_CORE_DRIVER_NAME;
+	input_dev->name = core_data->is_m2468 ? "main_touch" :
+		GOODIX_CORE_DRIVER_NAME;
 	input_dev->phys = GOOIDX_INPUT_PHYS;
 	input_dev->id.product = 0xDEAD;
 	input_dev->id.vendor = 0xBEEF;
@@ -2509,6 +2510,7 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	}
 
 	core_data->bus = bus_interface;
+	core_data->is_m2468 = goodix_is_m2468(node);
 
 	if (IS_ENABLED(CONFIG_OF) && bus_interface->dev->of_node) {
 		/* parse devicetree property */
@@ -2656,6 +2658,7 @@ static const struct dev_pm_ops dev_pm_ops = {
 static const struct platform_device_id ts_core_ids[] = {
 	{.name = GOODIX_CORE_DEVICE_NAME},
 	{.name = GOODIX_CORE_DEVICE_2_NAME},
+	{.name = "main_touch"},
 	{}
 };
 MODULE_DEVICE_TABLE(platform, ts_core_ids);

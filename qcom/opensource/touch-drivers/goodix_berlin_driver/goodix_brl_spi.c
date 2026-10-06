@@ -230,7 +230,9 @@ static int goodix_spi_probe(struct spi_device *spi)
 	if (!goodix_pdev)
 		return -ENOMEM;
 
-	if (idx)
+	if (goodix_is_m2468(spi->dev.of_node))
+		goodix_pdev->name = "main_touch";
+	else if (idx)
 		goodix_pdev->name = GOODIX_CORE_DEVICE_2_NAME;
 	else
 		goodix_pdev->name = GOODIX_CORE_DEVICE_NAME;
@@ -284,8 +286,10 @@ static const struct of_device_id spi_matchs[] = {
 	{.compatible = "goodix,gt9966S",},
 	{.compatible = "goodix,gt9916S",},
 	{.compatible = "goodix,gt9916S2",},
+	{.compatible = "goodix,brl-d",},
 	{},
 };
+MODULE_DEVICE_TABLE(of, spi_matchs);
 #endif
 
 static const struct spi_device_id spi_id_table[] = {

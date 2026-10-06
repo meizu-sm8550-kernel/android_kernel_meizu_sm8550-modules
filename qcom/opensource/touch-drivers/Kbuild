@@ -260,4 +260,4 @@ ifneq ($(CONFIG_ARCH_PINEAPPLE), y)
 	endif
 endif # pineapple
 
-CDEFINES += -DBUILD_TIMESTAMP=\"$(shell date -u +'%Y-%m-%dT%H:%M:%SZ')\"
+CDEFINES += -DBUILD_TIMESTAMP=\"$(shell date -u $(if $(SOURCE_DATE_EPOCH),-d @$(SOURCE_DATE_EPOCH)) +'%Y-%m-%dT%H:%M:%SZ')\"

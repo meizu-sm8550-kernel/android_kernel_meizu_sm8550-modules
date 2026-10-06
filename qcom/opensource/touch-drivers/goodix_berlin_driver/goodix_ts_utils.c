@@ -156,6 +156,23 @@ void goodix_rotate_abcd2cbad(int tx, int rx, s16 *data)
 	kfree(temp_buf);
 }
 
+/* Only the observed M2468 MP board uses this M2468 power/input profile. */
+bool goodix_is_m2468(struct device_node *node)
+{
+	struct device_node *root;
+	u32 board_id[2];
+	int ret;
+
+	if (!of_device_is_compatible(node, "goodix,brl-d"))
+		return false;
+	root = of_find_node_by_path("/");
+	if (!root)
+		return false;
+	ret = of_property_read_u32_array(root, "meizu,board-id", board_id, 2);
+	of_node_put(root);
+	return !ret && board_id[0] == 3 && board_id[1] == 5;
+}
+
 /* get ic type */
 int goodix_get_ic_type(struct device_node *node)
 {
@@ -168,7 +185,10 @@ int goodix_get_ic_type(struct device_node *node)
 		return ret;
 	}
 
-	if (strstr(name_tmp, "9897")) {
+	if (of_device_is_compatible(node, "goodix,brl-d")) {
+		ts_info("ic type is BerlinD (BRL-D compatible)");
+		ret = IC_TYPE_BERLIN_D;
+	} else if (strstr(name_tmp, "9897")) {
 		ts_info("ic type is BerlinA");
 		ret = IC_TYPE_BERLIN_A;
 	} else if (strstr(name_tmp, "9966") || strstr(name_tmp, "7986")) {

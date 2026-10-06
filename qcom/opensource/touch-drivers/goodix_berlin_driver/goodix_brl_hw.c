@@ -215,12 +215,21 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 	int iovdd_gpio = cd->board_data.iovdd_gpio;
 	int avdd_gpio = cd->board_data.avdd_gpio;
 	int reset_gpio = cd->board_data.reset_gpio;
+	bool iovdd_enabled = false, avdd_enabled = false;
+	/* Stock M2468 requests <=3.0V; its DT constrains AVDD to >=2.96V. */
+	int avdd_min = cd->is_m2468 ? 2960000 : REG_RESUME_MIN_VOLTAGE;
+	int avdd_max = cd->is_m2468 ? 3000000 : REG_RESUME_MAX_VOLTAGE;
 
 	if (on) {
 		if (iovdd_gpio > 0) {
 			gpio_direction_output(iovdd_gpio, 1);
 		} else if (cd->iovdd) {
 			if (regulator_count_voltages(cd->iovdd) > 0) {
+				if (cd->is_m2468) {
+					ret = regulator_set_voltage(cd->iovdd, 1800000, 1800000);
+					if (ret)
+						goto power_off;
+				}
 				ret = regulator_set_load(cd->iovdd, REG_RESUME_CURRENT);
 				if (ret) {
 					ts_err("Setting regulator load failed:%d", ret);
@@ -232,6 +241,7 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ts_err("Failed to enable iovdd:%d", ret);
 				goto power_off;
 			}
+			iovdd_enabled = true;
 		}
 		usleep_range(3000, 3100);
 		if (avdd_gpio > 0) {
@@ -241,13 +251,12 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ret = regulator_set_load(cd->avdd, REG_RESUME_CURRENT);
 				if (ret) {
 					ts_err("vdd regulator set_load failed ret=%d", ret);
-					return ret;
+					goto power_off;
 				}
-				ret = regulator_set_voltage(cd->avdd, REG_RESUME_MIN_VOLTAGE,
-							REG_RESUME_MAX_VOLTAGE);
+				ret = regulator_set_voltage(cd->avdd, avdd_min, avdd_max);
 				if (ret) {
 					ts_err("vdd regulator set_vtg failed ret=%d", ret);
-					return ret;
+					goto power_off;
 				}
 			}
 			ret = regulator_enable(cd->avdd);
@@ -255,6 +264,7 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ts_err("Failed to enable avdd:%d", ret);
 				goto power_off;
 			}
+			avdd_enabled = true;
 		}
 
 		gpio_direction_output(cd->board_data.reset_gpio, 0);
@@ -276,14 +286,14 @@ power_off:
 	gpio_direction_output(reset_gpio, 0);
 	if (iovdd_gpio > 0)
 		gpio_direction_output(iovdd_gpio, 0);
-	else if (cd->iovdd) {
+	else if (cd->iovdd && (!on || iovdd_enabled)) {
 		regulator_disable(cd->iovdd);
 		if (regulator_count_voltages(cd->iovdd) > 0)
 			regulator_set_load(cd->iovdd, REG_SUSPEND_CURRENT);
 	}
 	if (avdd_gpio > 0)
 		gpio_direction_output(avdd_gpio, 0);
-	else if (cd->avdd)
+	else if (cd->avdd && (!on || avdd_enabled))
 		regulator_disable(cd->avdd);
 	return ret;
 }
