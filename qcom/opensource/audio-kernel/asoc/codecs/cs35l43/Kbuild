@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 obj-m += cs35l43_dlkm.o
 cs35l43_dlkm-y := cs35l43.o cs35l43-i2c.o cs35l43-tables.o wm_adsp.o
-ccflags-y += -I$(src) -I$(src)/include
+# Relative M/src is rooted at srctree, while cc runs in the O= directory.
+cs35l43_src := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
+ccflags-y += -I$(cs35l43_src) -I$(cs35l43_src)/include
