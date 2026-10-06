@@ -17,6 +17,7 @@
 #include <drm/msm_drm_pp.h>
 
 #include "dsi_defs.h"
+#include "dsi_m2468_hbm.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_clk.h"
 #include "dsi_pwr.h"
@@ -129,6 +130,7 @@ struct dsi_backlight_config {
 	u32 bl_min_level;
 	u32 bl_max_level;
 	u32 brightness_max_level;
+	u32 brightness_default_level;
 	/* current brightness value */
 	u32 brightness;
 	u32 bl_level;
@@ -212,6 +214,7 @@ struct dsi_panel_ops {
 };
 
 struct dsi_panel {
+	struct m2468_hbm_panel m2468_hbm;
 	const char *name;
 	const char *type;
 	struct device_node *panel_of_node;

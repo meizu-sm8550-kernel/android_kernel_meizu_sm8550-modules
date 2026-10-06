@@ -1028,6 +1028,7 @@ void dsi_connector_put_modes(struct drm_connector *connector,
 		return;
 
 	dsi_display = display;
+	dsi_m2468_hbm_unbind(dsi_display);
 	count = dsi_display->panel->num_display_modes;
 	for (i = 0; i < count; i++) {
 		struct dsi_display_mode *dsi_mode = &dsi_display->modes[i];

@@ -364,9 +364,9 @@ dsi_ctrl_get_aspace(struct dsi_ctrl *dsi_ctrl,
 	return msm_gem_smmu_address_space_get(dsi_ctrl->drm_dev, domain);
 }
 
-static void dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
+static int dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
 {
-	int ret = 0;
+	int ret = 0, rc = 0;
 	u32 status;
 	u32 mask = DSI_CMD_MODE_DMA_DONE;
 	struct dsi_ctrl_hw_ops dsi_hw_ops;
@@ -388,6 +388,7 @@ static void dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
 					"dma_tx done but irq not triggered\n");
 		} else {
 			SDE_EVT32(dsi_ctrl->cell_index, SDE_EVTLOG_ERROR);
+			rc = -ETIMEDOUT;
 			DSI_CTRL_ERR(dsi_ctrl,
 					"Command transfer failed\n");
 		}
@@ -396,6 +397,7 @@ static void dsi_ctrl_dma_cmd_wait_for_done(struct dsi_ctrl *dsi_ctrl)
 	}
 	SDE_EVT32(dsi_ctrl->cell_index, SDE_EVTLOG_FUNC_EXIT);
 
+	return rc;
 }
 
 /**
@@ -426,9 +428,10 @@ static void dsi_ctrl_clear_dma_status(struct dsi_ctrl *dsi_ctrl)
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 }
 
-static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
+static int dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 {
 	struct dsi_ctrl_hw_ops dsi_hw_ops = dsi_ctrl->hw.ops;
+	int rc = 0, cleanup_rc;
 
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, dsi_ctrl->pending_cmd_flags);
 
@@ -438,7 +441,7 @@ static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 		dsi_ctrl_clear_dma_status(dsi_ctrl);
 	} else if (!(dsi_ctrl->pending_cmd_flags & DSI_CTRL_CMD_READ)) {
 		/* Wait for read command transfer to complete is done in dsi_message_rx. */
-		dsi_ctrl_dma_cmd_wait_for_done(dsi_ctrl);
+		rc = dsi_ctrl_dma_cmd_wait_for_done(dsi_ctrl);
 	}
 
 	mutex_lock(&dsi_ctrl->ctrl_lock);
@@ -449,7 +452,8 @@ static void dsi_ctrl_post_cmd_transfer(struct dsi_ctrl *dsi_ctrl)
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 
-	dsi_ctrl_transfer_cleanup(dsi_ctrl);
+	cleanup_rc = dsi_ctrl_transfer_cleanup(dsi_ctrl);
+	return rc ? rc : cleanup_rc;
 }
 
 static void dsi_ctrl_post_cmd_transfer_work(struct work_struct *work)
@@ -3483,9 +3487,9 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd)
 	return rc;
 }
 
-void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
+int dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
 {
-	int rc = 0;
+	int rc = 0, first;
 	struct dsi_clk_ctrl_info clk_info;
 	u32 mask = BIT(DSI_FIFO_OVERFLOW);
 
@@ -3495,6 +3499,7 @@ void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
 
 	/* Command engine disable, unmask overflow, remove vote on clocks and gdsc */
 	rc = dsi_ctrl_set_cmd_engine_state(dsi_ctrl, DSI_CTRL_ENGINE_OFF, false);
+	first = rc;
 	if (rc)
 		DSI_CTRL_ERR(dsi_ctrl, "failed to disable command engine\n");
 
@@ -3511,7 +3516,12 @@ void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
 	if (rc)
 		DSI_CTRL_ERR(dsi_ctrl, "failed to disable clocks\n");
 
-	(void)pm_runtime_put_sync(dsi_ctrl->drm_dev->dev);
+	if (!first)
+		first = rc;
+	rc = pm_runtime_put_sync(dsi_ctrl->drm_dev->dev);
+	if (!first && rc < 0)
+		first = rc;
+	return first;
 }
 
 /**
@@ -3525,15 +3535,15 @@ void dsi_ctrl_transfer_cleanup(struct dsi_ctrl *dsi_ctrl)
  * scheduled on the same thread or queued.
  *
  */
-void dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
+int dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
 {
 	if (!dsi_ctrl)
-		return;
+		return -EINVAL;
 
 	dsi_ctrl->pending_cmd_flags = flags;
 
 	if (!(flags & DSI_CTRL_CMD_LAST_COMMAND))
-		return;
+		return 0;
 
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY, dsi_ctrl->cell_index, flags);
 
@@ -3542,8 +3552,9 @@ void dsi_ctrl_transfer_unprepare(struct dsi_ctrl *dsi_ctrl, u32 flags)
 		queue_work(dsi_ctrl->post_cmd_tx_workq, &dsi_ctrl->post_cmd_tx_work);
 	} else {
 		dsi_ctrl->post_tx_queued = false;
-		dsi_ctrl_post_cmd_transfer(dsi_ctrl);
+		return dsi_ctrl_post_cmd_transfer(dsi_ctrl);
 	}
+	return 0;
 }
 
 /**

@@ -240,7 +240,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	props.type = BACKLIGHT_RAW;
 	props.power = FB_BLANK_UNBLANK;
 	props.max_brightness = bl_config->brightness_max_level;
-	props.brightness = bl_config->brightness_max_level;
+	props.brightness = bl_config->brightness_default_level;
 	snprintf(bl_node_name, BL_NODE_NAME_SIZE, "panel%u-backlight",
 							display_count);
 	c_conn->bl_device = backlight_device_register(bl_node_name, dev->dev, c_conn,
@@ -670,7 +670,8 @@ static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 		rc = set_power(connector, mode, display);
 		mutex_lock(&c_conn->lock);
 	}
-	c_conn->last_panel_power_mode = mode;
+	/* Failed transitions are unknown: even ON must retry real NOLP. */
+	c_conn->last_panel_power_mode = rc ? -1 : mode;
 
 	mutex_unlock(&c_conn->lock);
 	if (mode != SDE_MODE_DPMS_ON)
@@ -690,6 +691,7 @@ static int _sde_connector_update_dimming_bl_lut(struct sde_connector *c_conn,
 	struct dsi_display *dsi_display;
 	struct dsi_backlight_config *bl_config;
 	int rc = 0;
+	void *lut;
 
 	if (!c_conn || !c_state) {
 		SDE_ERROR("invalid arguments\n");
@@ -711,14 +713,21 @@ static int _sde_connector_update_dimming_bl_lut(struct sde_connector *c_conn,
 		return -ENODATA;
 
 	bl_config = &dsi_display->panel->bl_config;
-	bl_config->dimming_bl_lut = msm_property_get_blob(&c_conn->property_info,
+	lut = msm_property_get_blob(&c_conn->property_info,
 			&c_state->property_state, &sz, CONNECTOR_PROP_DIMMING_BL_LUT);
+	if (dsi_display->panel->m2468_hbm.supported) {
+		rc = dsi_m2468_hbm_set_lut(dsi_display->panel, lut, sz);
+		if (rc)
+			return rc;
+	} else {
+		bl_config->dimming_bl_lut = lut;
+	}
 	rc = c_conn->ops.set_backlight(&c_conn->base,
 			dsi_display, bl_config->bl_level);
 	if (!rc)
 		c_conn->unset_bl_level = 0;
 
-	return 0;
+	return rc;
 }
 
 static int _sde_connector_update_dimming_ctrl(struct sde_connector *c_conn,
