@@ -5176,6 +5176,10 @@ exit:
 
 static int hdd_open_cesium_nl_sock(void)
 {
+#ifdef WLAN_DISABLE_CESIUM_NETLINK
+	/* Leave protocol 30 available for the platform's existing device ABI. */
+	return 0;
+#else
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0))
 	struct netlink_kernel_cfg cfg = {
 		.groups = WLAN_NLINK_MCAST_GRP_ID,
@@ -5202,14 +5206,17 @@ static int hdd_open_cesium_nl_sock(void)
 	}
 
 	return ret;
+#endif
 }
 
 static void hdd_close_cesium_nl_sock(void)
 {
+#ifndef WLAN_DISABLE_CESIUM_NETLINK
 	if (cesium_nl_srv_sock) {
 		netlink_kernel_release(cesium_nl_srv_sock);
 		cesium_nl_srv_sock = NULL;
 	}
+#endif
 }
 
 void hdd_update_dynamic_mac(struct hdd_context *hdd_ctx,
