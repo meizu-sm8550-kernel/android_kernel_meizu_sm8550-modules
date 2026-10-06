@@ -322,6 +322,86 @@ static struct snd_soc_ops msm_common_be_ops = {
 	.shutdown = msm_common_snd_shutdown,
 };
 
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* M2468 stock machine_dlkm: secondary MI2S, two slots, RCV + SPK.
+ * DT phandles and sound-name-prefix supply device identity and routing.
+ * Clock sequence matches stock cs35l43_hw_params (0x2568).
+ */
+static struct snd_soc_dai_link_component note_smartpa_codecs[] = {
+	COMP_CODEC("cs35l43_rcv", "cs35l43-pcm"),
+	COMP_CODEC("cs35l43_spk", "cs35l43-pcm"),
+};
+
+static int note_cs35l43_hw_params(struct snd_pcm_substream *substream,
+				struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *dai;
+	unsigned int width, clock;
+	int ret, i;
+
+	ret = msm_common_snd_hw_params(substream, params);
+	if (ret)
+		return ret;
+	switch (params_format(params)) {
+	case SNDRV_PCM_FORMAT_S24_LE:
+	case SNDRV_PCM_FORMAT_S24_3LE:
+	case SNDRV_PCM_FORMAT_S32_LE:
+		width = 32;
+		break;
+	default:
+		width = 16;
+		break;
+	}
+	clock = width * params_rate(params) * 2;
+	for_each_rtd_codec_dais(rtd, i, dai) {
+		ret = snd_soc_dai_set_fmt(dai, SND_SOC_DAIFMT_I2S |
+					 SND_SOC_DAIFMT_CBS_CFS);
+		if (ret < 0)
+			return ret;
+		ret = snd_soc_component_set_sysclk(dai->component, 0, 0,
+						  clock, SND_SOC_CLOCK_IN);
+		if (ret < 0)
+			return ret;
+		ret = snd_soc_dai_set_sysclk(dai, 0, clock, SND_SOC_CLOCK_IN);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+static const struct snd_soc_ops note_cs35l43_be_ops = {
+	.startup = msm_common_snd_startup,
+	.shutdown = msm_common_snd_shutdown,
+	.hw_params = note_cs35l43_hw_params,
+};
+
+static int note_cs35l43_init(struct snd_soc_pcm_runtime *rtd)
+{
+	static const char * const widgets[] = {
+		"AMP Playback", "AMP Capture", "ASPRX1", "ASPRX2",
+		"ASPTX1", "ASPTX2", "SPK", "AP",
+	};
+	struct snd_soc_dai *dai;
+	int i, j;
+	char name[80];
+
+	for_each_rtd_codec_dais(rtd, i, dai) {
+		struct snd_soc_component *component = dai->component;
+		struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
+
+		for (j = 0; j < ARRAY_SIZE(widgets); j++) {
+			if (component->name_prefix)
+				snprintf(name, sizeof(name), "%s %s",
+					 component->name_prefix, widgets[j]);
+			else
+				snprintf(name, sizeof(name), "%s", widgets[j]);
+			snd_soc_dapm_ignore_suspend(dapm, name);
+		}
+	}
+	return 0;
+}
+
 static int msm_dmic_event(struct snd_soc_dapm_widget *w,
 			  struct snd_kcontrol *kcontrol, int event)
 {
@@ -846,6 +926,31 @@ static struct snd_soc_dai_link msm_rx_tx_cdc_dma_be_dai_links[] = {
 		.ignore_suspend = 1,
 		.ops = &msm_common_be_ops,
 		SND_SOC_DAILINK_REG(tx_dma_tx3),
+	},
+	{
+		.name = LPASS_BE_TX_CDC_DMA_TX_4,
+		.stream_name = LPASS_BE_TX_CDC_DMA_TX_4,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ignore_suspend = 1,
+		.ops = &msm_common_be_ops,
+		SND_SOC_DAILINK_REG(tx_dma_tx4),
+	},
+};
+
+static struct snd_soc_dai_link msm_note_tx_dai_links[] = {
+	/* TX CDC DMA Backend DAI Links */
+	{
+		.name = LPASS_BE_TX_CDC_DMA_TX_3,
+		.stream_name = LPASS_BE_TX_CDC_DMA_TX_3,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ignore_suspend = 1,
+		.ops = &msm_common_be_ops,
+		SND_SOC_DAILINK_REG(tx_dma_tx3),
+		.init = &msm_rx_tx_codec_init,
 	},
 	{
 		.name = LPASS_BE_TX_CDC_DMA_TX_4,
@@ -1596,6 +1701,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 	struct snd_soc_dai_link *dailink = NULL;
 	int total_links = 0;
 	int rc = 0;
+	u32 note_cs35l43 = 0;
 	u32 val = 0;
 	const struct of_device_id *match;
 
@@ -1609,12 +1715,20 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 	if (!strcmp(match->data, "codec")) {
 		card = &snd_soc_card_kalama_msm;
 
+		of_property_read_u32(dev->of_node, "qcom,enable_cs35l43", &note_cs35l43);
+		if (note_cs35l43) {
+			memcpy(msm_kalama_dai_links, msm_note_tx_dai_links,
+			       sizeof(msm_note_tx_dai_links));
+			total_links = ARRAY_SIZE(msm_note_tx_dai_links);
+		} else {
 		/* late probe uses dai link at index '0' to get wcd component */
 		memcpy(msm_kalama_dai_links + total_links,
 			   msm_rx_tx_cdc_dma_be_dai_links,
 			   sizeof(msm_rx_tx_cdc_dma_be_dai_links));
 		total_links +=
 			ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links);
+
+		}
 
 		switch (wsa_max_devs) {
 		case MONO_SPEAKER:
@@ -1724,6 +1838,21 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 
 		dailink = msm_stub_dai_links;
 		total_links = ARRAY_SIZE(msm_stub_be_dai_links);
+	}
+
+	if (card && note_cs35l43) {
+		int i;
+
+		for (i = 0; i < total_links; i++) {
+			if (strcmp(dailink[i].name, LPASS_BE_SEC_MI2S_RX) &&
+			    strcmp(dailink[i].name, LPASS_BE_SEC_MI2S_TX))
+				continue;
+			dailink[i].codecs = note_smartpa_codecs;
+			dailink[i].num_codecs = ARRAY_SIZE(note_smartpa_codecs);
+			dailink[i].ops = &note_cs35l43_be_ops;
+			if (dailink[i].playback_only)
+				dailink[i].init = note_cs35l43_init;
+		}
 	}
 
 	if (card) {
