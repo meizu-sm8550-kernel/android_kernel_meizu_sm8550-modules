@@ -4,7 +4,7 @@
   "upstream": "https://github.com/LineageOS/android_kernel_qcom_sm8550-modules.git",
   "upstream_commit": "d00477fbff4a83babbee37b2ea56fb0ded793eec",
   "source_only": true,
-  "local_module_inventory": 386,
+  "local_module_inventory": 387,
   "runtime_validated": false,
   "cs35l43_reference": {
     "repository": "https://github.com/meizu-8650-kernel/vendor_meizu_opensource_kernel-modules",
@@ -17,5 +17,13 @@
     ],
     "machine_driver": "Note TX3/TX4 plus secondary MI2S RCV/SPK; DT-controlled opt-in",
     "validation": "Local compile, matching CRC/dependencies, nine constant tables compared against Note stock; no candidate runtime validation"
+  },
+  "local_baseline_module_inventory": 386,
+  "fingerprint_candidate": {
+    "source": "Note stock ABI-compatible source reconstruction",
+    "compiled_against": "Android13 / Linux5.15.211 / SM8550",
+    "runtime_validated": false,
+    "wlan_coexistence": "Note selects CONFIG_WLAN_DISABLE_CESIUM_NETLINK=y; no load-order dependency",
+    "stock_binary_distributed": false
   }
 }
