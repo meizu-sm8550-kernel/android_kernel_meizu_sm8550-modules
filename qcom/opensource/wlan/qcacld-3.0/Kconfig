@@ -9,6 +9,15 @@ config QCA_CLD_WLAN
 
 if QCA_CLD_WLAN != n
 
+config WLAN_DISABLE_CESIUM_NETLINK
+	bool "Do not reserve the legacy Cesium netlink socket"
+	default n
+	help
+	  Skip the unused Cesium protocol 30 socket on platforms where another
+	  device requires that protocol for its userspace ABI. This driver has
+	  no Cesium receive callback or message producer. WLAN diagnostic and
+	  other netlink services remain enabled. Leave this disabled elsewhere.
+
 config QCACLD_WLAN_LFR3
 	bool "Enable the WLAN Legacy Fast Roaming feature Version 3"
 	default n
