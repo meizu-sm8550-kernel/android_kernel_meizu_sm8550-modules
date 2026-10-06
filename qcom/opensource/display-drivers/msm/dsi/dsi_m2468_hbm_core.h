@@ -31,7 +31,7 @@ int m2468_hbm_rgb(u32 brightness, bool on, u8 rgb[3]);
 void m2468_hbm_demura(u32 attempted, u32 requested, u32 dc_min, u8 payload[4]);
 int m2468_hbm_delays(u32 hz, u32 *before, u32 *after);
 int m2468_hbm_adfr_byte(u32 code);
-int m2468_hbm_run(struct m2468_hbm_state *s, bool on, u32 hz,
+int m2468_hbm_run(struct m2468_hbm_state *s, bool on, u32 hz, bool use_adfr,
 		const struct m2468_hbm_ops *ops, void *ctx);
 void m2468_hbm_invalidate(struct m2468_hbm_state *s, bool reset_complete);
 bool m2468_hbm_ready_matches(const struct m2468_hbm_state *s, u64 generation);

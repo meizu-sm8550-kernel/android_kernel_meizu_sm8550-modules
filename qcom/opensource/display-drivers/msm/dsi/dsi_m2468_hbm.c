@@ -225,9 +225,21 @@ static int m2468_validate(struct dsi_panel *p)
 	rc = m2468_check_packet(set, 1, (const u8 *)"\xc2\xdf\xdf\xdf\x6a\x00\x6d", 7);
 	if (rc)
 		return rc;
+	/* M2468's 144/90Hz modes have local-HBM tables but no ADFR pair.
+	 * Select a transaction without ADFR; do not send an empty command
+	 * set or claim that an ADFR setting was programmed.
+	 */
+	if (p->cur_mode->timing.refresh_rate == 144 ||
+	    p->cur_mode->timing.refresh_rate == 90)
+		return m2468_set(p, M2468_ADFR, 0)->count ||
+			m2468_set(p, M2468_ADFR, 1)->count ? -EINVAL : 0;
+	if (p->cur_mode->timing.refresh_rate != 120 &&
+	    p->cur_mode->timing.refresh_rate != 60 &&
+	    p->cur_mode->timing.refresh_rate != 30)
+		return -EOPNOTSUPP;
 	rc = m2468_check_set(m2468_set(p, M2468_ADFR, 0), 0, DSI_CMD_SET_STATE_LP);
 	if (rc)
-		return rc; /* 144/90Hz: empty, never a successful ADFR-off. */
+		return rc;
 	set = m2468_set(p, M2468_ADFR, 1);
 	rc = m2468_check_set(set, 18, DSI_CMD_SET_STATE_LP);
 	if (rc)
@@ -300,7 +312,7 @@ static int m2468_transaction(struct dsi_display *display, bool on, bool adfr, u3
 	struct dsi_panel *p = display->panel;
 	struct m2468_hbm_state *s = &p->m2468_hbm.state;
 	int rc, unvote;
-	bool newly_on = false;
+	bool newly_on = false, use_adfr;
 
 	if (!p->m2468_hbm.supported || display->trusted_vm_env || !display->hw_ownership)
 		return -EOPNOTSUPP;
@@ -329,7 +341,13 @@ static int m2468_transaction(struct dsi_display *display, bool on, bool adfr, u3
 	rc = m2468_validate(p);
 	if (rc)
 		goto out;
+	use_adfr = p->cur_mode->timing.refresh_rate != 144 &&
+		p->cur_mode->timing.refresh_rate != 90;
 	if (adfr) {
+		if (!use_adfr) {
+			rc = -EOPNOTSUPP;
+			goto out;
+		}
 		if (s->phase != M2468_HBM_OFF) {
 			rc = -EBUSY;
 			goto out;
@@ -344,7 +362,8 @@ static int m2468_transaction(struct dsi_display *display, bool on, bool adfr, u3
 		if (on && s->phase == M2468_HBM_ON)
 			goto out; /* idempotence must not restart the TE count. */
 		m2468_clear_ready(p);
-		rc = m2468_hbm_run(s, on, p->cur_mode->timing.refresh_rate, &m2468_ops, p);
+		rc = m2468_hbm_run(s, on, p->cur_mode->timing.refresh_rate,
+				use_adfr, &m2468_ops, p);
 		newly_on = !rc && on && s->phase == M2468_HBM_ON;
 	}
 out:
