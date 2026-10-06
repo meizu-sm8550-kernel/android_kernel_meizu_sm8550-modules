@@ -81,7 +81,7 @@ static void note_first_error(int *first, int rc)
 }
 
 /* Always attempt all recovery stages; partial packets may have taken effect. */
-static int note_hbm_restore(struct note_hbm_state *s, u32 after,
+static int note_hbm_restore(struct note_hbm_state *s, u32 after, bool use_adfr,
 		const struct note_hbm_ops *ops, void *ctx)
 {
 	int first = 0, rc;
@@ -92,11 +92,14 @@ static int note_hbm_restore(struct note_hbm_state *s, u32 after,
 		note_first_error(&first, ops->send(ctx, NOTE_LEVEL_OFF, 0));
 	ops->wait_ms(ctx, after);
 	note_first_error(&first, ops->restore(ctx));
-	rc = ops->send(ctx, NOTE_ADFR, s->saved_adfr);
-	note_first_error(&first, rc);
-	s->adfr_valid = !rc;
-	if (!rc)
-		s->adfr = s->saved_adfr;
+	s->adfr_valid = false;
+	if (use_adfr) {
+		rc = ops->send(ctx, NOTE_ADFR, s->saved_adfr);
+		note_first_error(&first, rc);
+		s->adfr_valid = !rc;
+		if (!rc)
+			s->adfr = s->saved_adfr;
+	}
 	s->phase = first ? NOTE_HBM_FAULT : NOTE_HBM_OFF;
 	if (!first)
 		s->saved_adfr = 0;
@@ -104,7 +107,7 @@ static int note_hbm_restore(struct note_hbm_state *s, u32 after,
 }
 
 /* Caller owns panel transaction lock, validated mode/tables and clock vote. */
-int note_hbm_run(struct note_hbm_state *s, bool on, u32 hz,
+int note_hbm_run(struct note_hbm_state *s, bool on, u32 hz, bool use_adfr,
 		const struct note_hbm_ops *ops, void *ctx)
 {
 	u32 before, after;
@@ -123,22 +126,27 @@ int note_hbm_run(struct note_hbm_state *s, bool on, u32 hz,
 		return -ERANGE;
 	s->generation++;
 	if (!on)
-		return note_hbm_restore(s, after, ops, ctx);
+		return note_hbm_restore(s, after, use_adfr, ops, ctx);
 
 	/* Candidate default policy is ADFR off until explicitly programmed. */
-	s->saved_adfr = s->adfr_valid ? s->adfr : 0;
+	s->saved_adfr = use_adfr && s->adfr_valid ? s->adfr : 0;
 	s->phase = NOTE_HBM_ENABLING;
-	rc = ops->send(ctx, NOTE_ADFR, 0);
-	s->adfr_valid = !rc;
+	s->adfr_valid = false;
+	rc = 0;
+	if (use_adfr) {
+		rc = ops->send(ctx, NOTE_ADFR, 0);
+		s->adfr_valid = !rc;
+		if (!rc)
+			s->adfr = 0;
+	}
 	if (!rc) {
-		s->adfr = 0;
 		ops->wait_ms(ctx, before);
 		rc = ops->send(ctx, NOTE_LOCAL_ON, 0);
 	}
 	if (!rc && s->attempted >= 3151)
 		rc = ops->send(ctx, NOTE_LEVEL_ON, 0);
 	if (rc) {
-		recovery = note_hbm_restore(s, after, ops, ctx);
+		recovery = note_hbm_restore(s, after, use_adfr, ops, ctx);
 		if (recovery)
 			s->phase = NOTE_HBM_FAULT;
 		return rc;

@@ -31,7 +31,7 @@ int note_hbm_rgb(u32 brightness, bool on, u8 rgb[3]);
 void note_hbm_demura(u32 attempted, u32 requested, u32 dc_min, u8 payload[4]);
 int note_hbm_delays(u32 hz, u32 *before, u32 *after);
 int note_hbm_adfr_byte(u32 code);
-int note_hbm_run(struct note_hbm_state *s, bool on, u32 hz,
+int note_hbm_run(struct note_hbm_state *s, bool on, u32 hz, bool use_adfr,
 		const struct note_hbm_ops *ops, void *ctx);
 void note_hbm_invalidate(struct note_hbm_state *s, bool reset_complete);
 bool note_hbm_ready_matches(const struct note_hbm_state *s, u64 generation);
