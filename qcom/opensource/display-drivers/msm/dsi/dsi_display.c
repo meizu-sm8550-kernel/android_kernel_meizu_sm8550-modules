@@ -9,6 +9,7 @@
 #include <linux/of_gpio.h>
 #include <linux/err.h>
 #include <linux/version.h>
+#include <video/mipi_display.h>
 
 #include "msm_drv.h"
 #include "sde_connector.h"
@@ -850,6 +851,83 @@ exit:
 	return rc;
 }
 
+/*
+ * M2468 ILI7838E has a banked ESD check, selected by its Note DT opt-in.
+ * The stock panel check selects page 0 for 0x0a, page 0x20 for 0xb0,
+ * then restores page 0. 0xb0 reports faults as 0x05 or 0x0f; it is not
+ * the constant zero in the generic DT status-value array.
+ * Caller holds panel_lock and the ESD clock vote for the whole sequence.
+ */
+static int dsi_display_note_esd_xfer(struct dsi_display *display,
+		struct dsi_display_ctrl *ctrl, const u8 *tx, size_t len, u8 *rx)
+{
+	struct dsi_cmd_desc cmd = { 0 };
+	int rc, cleanup;
+
+	cmd.msg.type = rx ? MIPI_DSI_DCS_READ : MIPI_DSI_DCS_LONG_WRITE;
+	cmd.msg.channel = display->panel->mipi_device.channel;
+	cmd.msg.flags = MIPI_DSI_MSG_UNICAST_COMMAND;
+	cmd.msg.tx_buf = tx;
+	cmd.msg.tx_len = len;
+	cmd.msg.rx_buf = rx;
+	cmd.msg.rx_len = rx ? 1 : 0;
+	cmd.ctrl_flags = rx ? DSI_CTRL_CMD_READ : 0;
+	dsi_display_set_cmd_tx_ctrl_flags(display, &cmd);
+	/* Bank writes must finish before the next read or the stack buffer dies. */
+	cmd.ctrl_flags &= ~DSI_CTRL_CMD_ASYNC_WAIT;
+
+	rc = dsi_ctrl_transfer_prepare(ctrl->ctrl, cmd.ctrl_flags);
+	if (rc)
+		return rc;
+	rc = dsi_ctrl_cmd_transfer(ctrl->ctrl, &cmd);
+	cleanup = dsi_ctrl_transfer_unprepare(ctrl->ctrl, cmd.ctrl_flags);
+	if (rc < 0)
+		return rc;
+	if (rx && rc != 1)
+		return -EIO;
+	return cleanup;
+}
+
+static int dsi_display_note_esd_check(struct dsi_display *display,
+		struct dsi_display_ctrl *ctrl)
+{
+	static const u8 page0[] = { 0xff, 0x09, 0x38, 0x00 };
+	static const u8 page20[] = { 0xff, 0x09, 0x38, 0x20 };
+	static const u8 reg0a = 0x0a, regb0 = 0xb0;
+	u8 status0a = 0, statusb0 = 0;
+	int rc, restore;
+
+	lockdep_assert_held(&display->panel->panel_lock);
+	if (!ctrl || !ctrl->ctrl)
+		return -EINVAL;
+	if (!dsi_ctrl_validate_host_state(ctrl->ctrl))
+		return 1;
+
+	rc = dsi_display_note_esd_xfer(display, ctrl, page0, sizeof(page0), NULL);
+	if (rc)
+		goto restore_page;
+	rc = dsi_display_note_esd_xfer(display, ctrl, &reg0a, 1, &status0a);
+	if (rc)
+		goto restore_page;
+	rc = dsi_display_note_esd_xfer(display, ctrl, page20, sizeof(page20), NULL);
+	if (rc)
+		goto restore_page;
+	rc = dsi_display_note_esd_xfer(display, ctrl, &regb0, 1, &statusb0);
+
+restore_page:
+	/* Also restore after a failed transfer that may have changed the bank. */
+	restore = dsi_display_note_esd_xfer(display, ctrl, page0, sizeof(page0), NULL);
+	if (rc)
+		return rc;
+	if (restore)
+		return restore;
+	if (status0a != 0x9c || statusb0 == 0x05 || statusb0 == 0x0f) {
+		DSI_ERR("Note ESD status: 0a=0x%02x b0=0x%02x\n", status0a, statusb0);
+		return -EINVAL;
+	}
+	return 1;
+}
+
 static int dsi_display_status_reg_read(struct dsi_display *display)
 {
 	int rc = 0, i;
@@ -867,7 +945,12 @@ static int dsi_display_status_reg_read(struct dsi_display *display)
 		}
 	}
 
-	rc = dsi_display_validate_status(m_ctrl, display);
+	if (!strcmp(display->panel->name, "ILI7838E_TIANMA_MEIZU") &&
+	    display->panel->utils.read_bool(display->panel->utils.data,
+			"xjmz,display-xjmz-esd-check-enabled"))
+		rc = dsi_display_note_esd_check(display, m_ctrl);
+	else
+		rc = dsi_display_validate_status(m_ctrl, display);
 	if (rc <= 0) {
 		DSI_ERR("[%s] read status failed on master,rc=%d\n",
 		       display->name, rc);
