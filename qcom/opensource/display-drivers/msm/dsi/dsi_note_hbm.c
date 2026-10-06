@@ -308,6 +308,14 @@ static int note_transaction(struct dsi_display *display, bool on, bool adfr, u32
 		mutex_lock(&p->panel_lock);
 		note_clear_ready(p);
 		s->generation++;
+		/* OFF is established by a completed panel ON or HBM restore.
+		 * No transport is needed, even if this mode has no ADFR table.
+		 * FAULT must still take the error path below.
+		 */
+		if (s->phase == NOTE_HBM_OFF) {
+			mutex_unlock(&p->panel_lock);
+			return 0;
+		}
 		mutex_unlock(&p->panel_lock);
 	}
 	rc = dsi_display_clk_ctrl(display->dsi_clk_handle, DSI_CORE_CLK, DSI_CLK_ON);
