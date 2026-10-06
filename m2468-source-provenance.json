@@ -4,6 +4,18 @@
   "upstream": "https://github.com/LineageOS/android_kernel_qcom_sm8550-modules.git",
   "upstream_commit": "d00477fbff4a83babbee37b2ea56fb0ded793eec",
   "source_only": true,
-  "local_module_inventory": 385,
-  "runtime_validated": false
+  "local_module_inventory": 386,
+  "runtime_validated": false,
+  "cs35l43_reference": {
+    "repository": "https://github.com/meizu-8650-kernel/vendor_meizu_opensource_kernel-modules",
+    "commit": "dafe79bf5dbb772def7805a05ac917fa55ae9855",
+    "path": "cs35l43",
+    "m2468_changes": [
+      "Linux 5.15 I2C remove signature",
+      "M2468 PCM playback/capture register branches",
+      "IRQ/DSP error handling and asynchronous teardown"
+    ],
+    "machine_driver": "M2468 TX3/TX4 plus secondary MI2S RCV/SPK; DT-controlled opt-in",
+    "validation": "Local compile, matching CRC/dependencies, nine constant tables compared against M2468 stock; no candidate runtime validation"
+  }
 }
