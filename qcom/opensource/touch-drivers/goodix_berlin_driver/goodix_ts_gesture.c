@@ -289,8 +289,8 @@ static int gsx_gesture_ist(struct goodix_ts_core *cd,
 			input_report_key(cd->input_dev, BTN_TOUCH, 1);
 			input_mt_slot(cd->input_dev, 0);
 			input_mt_report_slot_state(cd->input_dev, MT_TOOL_FINGER, 1);
-			input_report_abs(cd->input_dev, ABS_MT_POSITION_X, fodx);
-			input_report_abs(cd->input_dev, ABS_MT_POSITION_Y, fody);
+			goodix_report_coordinate(cd->input_dev, ABS_MT_POSITION_X, fodx);
+			goodix_report_coordinate(cd->input_dev, ABS_MT_POSITION_Y, fody);
 			input_report_abs(cd->input_dev, ABS_MT_WIDTH_MAJOR, overlay_area);
 			input_sync(cd->input_dev);
 		} else {

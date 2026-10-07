@@ -4,7 +4,7 @@
   "upstream": "https://github.com/LineageOS/android_kernel_qcom_sm8550-modules.git",
   "upstream_commit": "d00477fbff4a83babbee37b2ea56fb0ded793eec",
   "source_only": true,
-  "local_module_inventory": 387,
+  "local_module_inventory": 388,
   "runtime_validated": false,
   "cs35l43_reference": {
     "repository": "https://github.com/meizu-8650-kernel/vendor_meizu_opensource_kernel-modules",
@@ -25,5 +25,13 @@
     "runtime_validated": false,
     "wlan_coexistence": "M2468 selects CONFIG_WLAN_DISABLE_CESIUM_NETLINK=y; no load-order dependency",
     "stock_binary_distributed": false
+  },
+  "touch_coordinate_candidate": {
+    "scope": "M2468 MP input X/Y normalization, matching the user-provided framework workaround",
+    "scaling": 10,
+    "runtime_validated": false,
+    "local_import_crc_count": 127,
+    "framework_workaround_must_be_removed": true,
+    "other_profiles_unchanged": true
   }
 }

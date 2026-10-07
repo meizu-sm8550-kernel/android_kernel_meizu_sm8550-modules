@@ -691,6 +691,22 @@ int goodix_fw_update_init(struct goodix_ts_core *core_data);
 void goodix_fw_update_uninit(void);
 int goodix_do_fw_update(struct goodix_ic_config *ic_config, int mode);
 
+/*
+ * M2468 firmware reports X/Y in tenths of the DT coordinate unit. Convert
+ * once at the input boundary, including gesture coordinates on this device.
+ * Keep the advertised axes and non-position fields in their existing units.
+ * Both input devices install core_data before registration.
+ */
+static inline void goodix_report_coordinate(struct input_dev *dev,
+		unsigned int code, int value)
+{
+	struct goodix_ts_core *cd = input_get_drvdata(dev);
+
+	if (cd->is_m2468)
+		value /= 10;
+	input_report_abs(dev, code, value);
+}
+
 bool goodix_is_m2468(struct device_node *node);
 int goodix_get_ic_type(struct device_node *node);
 int gesture_module_init(void);

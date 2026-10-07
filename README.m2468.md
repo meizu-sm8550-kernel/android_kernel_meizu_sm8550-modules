@@ -1,5 +1,7 @@
 # Meizu 21 Note (M2468) · lineage-23.2
 
+2026-10-07：用户确认指纹、相机和闪光灯问题已修复。新增 [M2468 触控坐标修复](qcom/opensource/touch-drivers/README.m2468-coordinates.md)，将 X/Y 十倍单位转换下沉 Goodix；本地编译/CRC与手指上报回归通过，实机待验证。配套 ROM 必须移除原 inputflinger 除以 10 补丁，避免双重缩放。最新选择388项，本次仅替换goodix_ts。下方早期未上机叙述保留历史范围。
+
 配套 QCOM 外置驱动，包含 M2468 显示、Goodix、CS35L43 音频和 JIIOV 指纹平台接口适配。
 
 通过 [kernel_manifest](https://github.com/meizu-sm8550-kernel/kernel_manifest) 的分支跟随清单同步；不需要人工套补丁。发布分支为 `lineage-23.2`，不继承 ROM 分支，不固定项目 SHA，也不移除其他清单项目。
