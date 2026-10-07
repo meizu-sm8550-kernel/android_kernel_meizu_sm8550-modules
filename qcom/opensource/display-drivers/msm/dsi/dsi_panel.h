@@ -18,6 +18,7 @@
 
 #include "dsi_defs.h"
 #include "dsi_note_hbm.h"
+#include "dsi_note_backlight.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_clk.h"
 #include "dsi_pwr.h"
@@ -215,6 +216,7 @@ struct dsi_panel_ops {
 
 struct dsi_panel {
 	struct note_hbm_panel note_hbm;
+	struct note_bl_panel note_bl;
 	const char *name;
 	const char *type;
 	struct device_node *panel_of_node;

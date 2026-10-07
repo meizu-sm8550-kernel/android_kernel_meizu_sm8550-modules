@@ -645,8 +645,11 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 	if (panel->note_hbm.supported) {
 		struct note_hbm_state *s = &panel->note_hbm.state;
 
-		if (atomic_read(&panel->esd_recovery_pending))
+		if (atomic_read(&panel->esd_recovery_pending)) {
+			dsi_note_backlight_invalidate(panel);
+			s->successful_valid = false;
 			return -EIO;
+		}
 		if (bl_lvl > 4095)
 			return -ERANGE;
 		if (bl_lvl && panel->note_hbm.low_power)
@@ -664,7 +667,9 @@ int dsi_panel_set_backlight(struct dsi_panel *panel, u32 bl_lvl)
 		rc = backlight_device_set_brightness(bl->raw_bd, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_DCS:
-		rc = dsi_panel_update_backlight(panel, bl_lvl);
+		rc = panel->note_hbm.supported ?
+			dsi_note_backlight_set(panel, bl_lvl) :
+			dsi_panel_update_backlight(panel, bl_lvl);
 		break;
 	case DSI_BACKLIGHT_EXTERNAL:
 		break;
@@ -1906,6 +1911,11 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-set-local-hbm-lv-commands",
 	"qcom,mdss-dsi-adfr-on-command",
 	"qcom,mdss-dsi-adfr-off-command",
+	"qcom,mdss-dsi-pwm-dc-mode-command",
+	"qcom,mdss-dsi-dc-pwm-mode-command",
+	"qcom,mdss-dsi-demura-offset-dc-command",
+	"qcom,mdss-dsi-demura-offset-pwm-1-command",
+	"qcom,mdss-dsi-demura-offset-pwm-2-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1939,6 +1949,11 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-set-local-hbm-lv-commands-state",
 	"qcom,mdss-dsi-adfr-on-command-state",
 	"qcom,mdss-dsi-adfr-off-command-state",
+	"qcom,mdss-dsi-pwm-dc-mode-command-state",
+	"qcom,mdss-dsi-dc-pwm-mode-command-state",
+	"qcom,mdss-dsi-demura-offset-dc-command-state",
+	"qcom,mdss-dsi-demura-offset-pwm-1-command-state",
+	"qcom,mdss-dsi-demura-offset-pwm-2-command-state",
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -2066,6 +2081,21 @@ static int dsi_panel_parse_cmd_sets_sub(struct dsi_panel_cmd_set *cmd,
 
 	print_hex_dump_debug("", DUMP_PREFIX_NONE, 8, 1, data, length, false);
 
+	if (type >= DSI_CMD_SET_NOTE_PWM_DC && type <= DSI_CMD_SET_NOTE_DEMURA_LOW) {
+		bool lp = type <= DSI_CMD_SET_NOTE_DC_PWM;
+		u32 state_length = 0;
+		const char *expected = lp ? "dsi_lp_mode" : "dsi_hs_mode";
+
+		state = utils->get_property(utils->data, cmd_set_state_map[type], &state_length);
+		/* Raw OF properties need not contain a terminator. Validate size
+		 * before comparing the complete expected string including NUL.
+		 */
+		if (!state || state_length != sizeof("dsi_lp_mode") ||
+		    memcmp(state, expected, sizeof("dsi_lp_mode")))
+			return -EINVAL;
+		return dsi_note_backlight_parse(cmd, data, length, lp);
+	}
+
 	rc = dsi_panel_get_cmd_pkt_count(data, length, &packet_count);
 	if (rc) {
 		DSI_ERR("commands failed, rc=%d\n", rc);
@@ -2109,7 +2139,7 @@ error:
 
 static int dsi_panel_parse_cmd_sets(
 		struct dsi_display_mode_priv_info *priv_info,
-		struct dsi_parser_utils *utils)
+		struct dsi_parser_utils *utils, struct dsi_panel *panel)
 {
 	int rc = 0;
 	struct dsi_panel_cmd_set *set;
@@ -2124,6 +2154,14 @@ static int dsi_panel_parse_cmd_sets(
 		set = &priv_info->cmd_sets[i];
 		set->type = i;
 		set->count = 0;
+		if (i >= DSI_CMD_SET_NOTE_PWM_DC) {
+			if (!panel->note_hbm.supported)
+				continue;
+			if (!panel->note_bl.configured) {
+				rc = -EINVAL;
+				goto note_error;
+			}
+		}
 
 		if (i == DSI_CMD_SET_PPS) {
 			rc = dsi_panel_alloc_cmd_packets(set, 1);
@@ -2133,12 +2171,29 @@ static int dsi_panel_parse_cmd_sets(
 			set->state = DSI_CMD_SET_STATE_LP;
 		} else {
 			rc = dsi_panel_parse_cmd_sets_sub(set, i, utils);
-			if (rc)
+			if (rc) {
 				DSI_DEBUG("failed to parse set %d\n", i);
+				if (i >= DSI_CMD_SET_NOTE_PWM_DC)
+					goto note_error;
+			}
 		}
 	}
 
 	rc = 0;
+	return rc;
+note_error:
+	/* get_mode's caller frees only priv_info on error. Release each
+	 * earlier allocation here and leave put_mode safe if used instead.
+	 */
+	for (i = 0; i < DSI_CMD_SET_MAX; i++) {
+		set = &priv_info->cmd_sets[i];
+		if (set->cmds) {
+			dsi_panel_destroy_cmd_packets(set);
+			dsi_panel_dealloc_cmd_packets(set);
+		}
+		set->cmds = NULL;
+		set->count = 0;
+	}
 	return rc;
 }
 
@@ -3793,6 +3848,7 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 
 	mutex_init(&panel->panel_lock);
 	dsi_note_hbm_init(panel);
+	dsi_note_backlight_init(panel);
 
 	return panel;
 error:
@@ -4309,7 +4365,7 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 			goto parse_fail;
 		}
 
-		rc = dsi_panel_parse_cmd_sets(prv_info, utils);
+		rc = dsi_panel_parse_cmd_sets(prv_info, utils, panel);
 		if (rc) {
 			DSI_ERR("failed to parse command sets, rc=%d\n", rc);
 			goto parse_fail;
@@ -4749,6 +4805,7 @@ int dsi_panel_switch_cmd_mode_out(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_CMD_SWITCH_OUT);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_CMD_SWITCH_OUT cmds, rc=%d\n",
@@ -4769,6 +4826,7 @@ int dsi_panel_switch_video_mode_out(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_VID_SWITCH_OUT);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_VID_SWITCH_OUT cmds, rc=%d\n",
@@ -4789,6 +4847,7 @@ int dsi_panel_switch_video_mode_in(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_VID_SWITCH_IN);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_VID_SWITCH_IN cmds, rc=%d\n",
@@ -4809,6 +4868,7 @@ int dsi_panel_switch_cmd_mode_in(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_CMD_SWITCH_IN);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_CMD_SWITCH_IN cmds, rc=%d\n",
@@ -4829,6 +4889,7 @@ int dsi_panel_switch(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmds, rc=%d\n",
@@ -4849,6 +4910,7 @@ int dsi_panel_post_switch(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_POST_TIMING_SWITCH);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_POST_TIMING_SWITCH cmds, rc=%d\n",
@@ -4869,6 +4931,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	dsi_note_backlight_invalidate(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
 	if (rc) {
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",

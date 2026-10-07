@@ -3563,8 +3563,19 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 			DSI_ERR("[%s] cmd transfer failed, rc=%d\n", display->name, rc);
 
 		done_rc = dsi_ctrl_transfer_unprepare(display->ctrl[idx].ctrl, cmd->ctrl_flags);
-		if (display->panel->note_hbm.supported && !rc)
-			rc = done_rc;
+		if (display->panel->note_hbm.supported) {
+			if (rc) {
+				/* prepare succeeded. LAST unprepare already releases;
+				 * a failed buffered packet still owns that vote, even
+				 * if its first packet failed before cmd_len advanced.
+				 */
+				if (!(cmd->ctrl_flags & DSI_CTRL_CMD_LAST_COMMAND))
+					dsi_ctrl_transfer_cleanup(display->ctrl[idx].ctrl);
+				display->ctrl[idx].ctrl->cmd_len = 0;
+			} else {
+				rc = done_rc;
+			}
+		}
 	}
 
 error:
@@ -7968,6 +7979,7 @@ int dsi_display_set_mode(struct dsi_display *display,
 			adj_mode.priv_info->clk_rate_hz);
 
 	mutex_lock(&display->panel->panel_lock);
+	dsi_note_backlight_invalidate(display->panel);
 	memcpy(display->panel->cur_mode, &adj_mode, sizeof(adj_mode));
 	if (display->panel->note_hbm.supported) {
 		display->panel->note_hbm.state.adfr_valid = false;

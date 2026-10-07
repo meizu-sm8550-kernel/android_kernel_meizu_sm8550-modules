@@ -10,6 +10,8 @@ struct note_hbm_panel {
 	u32 vblanks;
 };
 void dsi_note_hbm_init(struct dsi_panel *panel);
+/* panel_lock and DSI clocks held. Does not change local-HBM ready. */
+int dsi_note_hbm_backlight_adfr(struct dsi_panel *panel, u32 value);
 int dsi_note_hbm_bind(struct dsi_display *display);
 void dsi_note_hbm_unbind(struct dsi_display *display);
 void dsi_note_hbm_te(void *display);
