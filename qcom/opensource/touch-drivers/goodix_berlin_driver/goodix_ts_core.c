@@ -1216,11 +1216,76 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 	mutex_unlock(&dev->mutex);
 }
 
+/* IRQ only queues M2468 firmware requests; no new mailbox waits in IRQ. */
+static void goodix_m2468_request_work(struct work_struct *work)
+{
+	struct goodix_ts_core *cd = container_of(work, struct goodix_ts_core,
+					       m2468_request_work);
+	unsigned long requests = xchg(&cd->m2468_requests, 0);
+	bool allowed;
+	int ret;
+
+	mutex_lock(&cd->report_rate_lock);
+	allowed = cd->report_rate_ready && !cd->report_rate_blocked &&
+		  cd->report_rate_powered;
+	mutex_unlock(&cd->report_rate_lock);
+	if (!allowed)
+		return;
+
+	/* Lifecycle blockers drain this worker before entering sleep or ISP. */
+	if (requests & BIT(REQUEST_TYPE_RESET)) {
+		ret = cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
+		if (ret)
+			ts_err("M2468 firmware reset request failed: %d", ret);
+	}
+	if (requests & BIT(REQUEST_TYPE_CONFIG)) {
+		ret = goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
+		if (ret)
+			ts_err("M2468 firmware config request failed: %d", ret);
+	}
+}
+
+static void goodix_m2468_rate_block(struct goodix_ts_core *cd,
+				 unsigned long reason)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_blocked |= reason;
+	mutex_unlock(&cd->report_rate_lock);
+	/* irq_enable(false) uses disable_irq_nosync. Drain old producers too. */
+	synchronize_irq(cd->irq);
+	cancel_work_sync(&cd->m2468_request_work);
+	xchg(&cd->m2468_requests, 0);
+}
+
+static void goodix_m2468_rate_unblock(struct goodix_ts_core *cd,
+				   unsigned long reason)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_blocked &= ~reason;
+	mutex_unlock(&cd->report_rate_lock);
+	goodix_restore_report_rate(cd);
+}
+
 static int goodix_ts_request_handle(struct goodix_ts_core *cd,
 	struct goodix_ts_event *ts_event)
 {
 	struct goodix_ts_hw_ops *hw_ops = cd->hw_ops;
 	int ret = -1;
+
+	if (cd->is_m2468 &&
+	    (ts_event->request_code == REQUEST_TYPE_CONFIG ||
+	     ts_event->request_code == REQUEST_TYPE_RESET)) {
+		if (cd->init_stage == CORE_INIT_STAGE2 &&
+		    !READ_ONCE(cd->report_rate_blocked)) {
+			set_bit(ts_event->request_code, &cd->m2468_requests);
+			schedule_work(&cd->m2468_request_work);
+		}
+		return 0;
+	}
 
 	if (ts_event->request_code == REQUEST_TYPE_CONFIG)
 		ret = goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
@@ -1760,6 +1825,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 
 	ts_info("Suspend start");
 	atomic_set(&core_data->suspended, 1);
+	goodix_m2468_rate_block(core_data, GOODIX_RATE_SUSPEND);
 	/* disable irq */
 	hw_ops->irq_enable(core_data, false);
 
@@ -1875,6 +1941,7 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 out:
+	goodix_m2468_rate_unblock(core_data, GOODIX_RATE_SUSPEND);
 	/* enable irq */
 	hw_ops->irq_enable(core_data, true);
 	/* open esd */
@@ -2002,11 +2069,21 @@ static int goodix_generic_noti_callback(struct notifier_block *self,
 	switch (action) {
 	case NOTIFY_FWUPDATE_START:
 		hw_ops->irq_enable(cd, 0);
+		goodix_m2468_rate_block(cd, GOODIX_RATE_FWUPDATE);
 		break;
 	case NOTIFY_FWUPDATE_SUCCESS:
 	case NOTIFY_FWUPDATE_FAILED:
 		if (hw_ops->read_version(cd, &cd->fw_version))
 			ts_info("failed read fw version info[ignore]");
+		/* Do not clear the ISP blocker unless normal metadata is valid. */
+		if (cd->is_m2468 &&
+		    !hw_ops->read_version(cd, &cd->fw_version) &&
+		    !hw_ops->get_ic_info(cd, &cd->ic_info)) {
+			mutex_lock(&cd->report_rate_lock);
+			cd->report_rate_powered = true;
+			mutex_unlock(&cd->report_rate_lock);
+			goodix_m2468_rate_unblock(cd, GOODIX_RATE_FWUPDATE);
+		}
 		hw_ops->irq_enable(cd, 1);
 		break;
 	default:
@@ -2183,6 +2260,11 @@ upgrade:
 	 * if not we will send config with interactive mode
 	 */
 	goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_ready = true;
+	cd->report_rate_powered = true;
+	mutex_unlock(&cd->report_rate_lock);
+	goodix_restore_report_rate(cd);
 #ifdef CONFIG_ARCH_QTI_VM
 skip_to_stage2_init:
 #endif
@@ -2511,6 +2593,9 @@ static int goodix_ts_probe(struct platform_device *pdev)
 
 	core_data->bus = bus_interface;
 	core_data->is_m2468 = goodix_is_m2468(node);
+	mutex_init(&core_data->report_rate_lock);
+	mutex_init(&core_data->cmd_lock);
+	INIT_WORK(&core_data->m2468_request_work, goodix_m2468_request_work);
 
 	if (IS_ENABLED(CONFIG_OF) && bus_interface->dev->of_node) {
 		/* parse devicetree property */
@@ -2614,6 +2699,10 @@ static int goodix_ts_remove(struct platform_device *pdev)
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
 	struct goodix_ts_esd *ts_esd = &core_data->ts_esd;
 
+	if (core_data->is_m2468 && core_data->init_stage >= CORE_INIT_STAGE2) {
+		hw_ops->irq_enable(core_data, false);
+		goodix_m2468_rate_block(core_data, GOODIX_RATE_REMOVE);
+	}
 	goodix_ts_unregister_notifier(&core_data->ts_notifier);
 	goodix_tools_exit();
 

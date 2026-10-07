@@ -484,6 +484,14 @@ struct goodix_ic_config {
 
 struct goodix_ts_core {
 	bool is_m2468;
+	/* M2468 normal-firmware state, protected by report_rate_lock. */
+	bool report_rate_ready;
+	bool report_rate_powered;
+	unsigned long report_rate_blocked;
+	unsigned long m2468_requests;
+	struct mutex report_rate_lock;
+	struct mutex cmd_lock;
+	struct work_struct m2468_request_work;
 	int init_stage;
 	struct platform_device *pdev;
 	struct goodix_fw_version fw_version;
@@ -706,6 +714,12 @@ static inline void goodix_report_coordinate(struct input_dev *dev,
 		value /= 10;
 	input_report_abs(dev, code, value);
 }
+
+#define GOODIX_RATE_SUSPEND BIT(0)
+#define GOODIX_RATE_FWUPDATE BIT(1)
+#define GOODIX_RATE_REMOVE BIT(2)
+
+void goodix_restore_report_rate(struct goodix_ts_core *cd);
 
 bool goodix_is_m2468(struct device_node *node);
 int goodix_get_ic_type(struct device_node *node);

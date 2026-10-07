@@ -209,7 +209,7 @@ static int brl_reset_after(struct goodix_ts_core *cd)
 #define REG_RESUME_MIN_VOLTAGE 3200000
 #define REG_RESUME_MAX_VOLTAGE 3200000
 
-static int brl_power_on(struct goodix_ts_core *cd, bool on)
+static int brl_power_on_locked(struct goodix_ts_core *cd, bool on)
 {
 	int ret = 0;
 	int iovdd_gpio = cd->board_data.iovdd_gpio;
@@ -298,6 +298,25 @@ power_off:
 	return ret;
 }
 
+static void goodix_restore_report_rate_locked(struct goodix_ts_core *cd);
+
+static int brl_power_on(struct goodix_ts_core *cd, bool on)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_power_on_locked(cd, on);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_powered = false;
+	ret = brl_power_on_locked(cd, on);
+	if (!ret && on) {
+		cd->report_rate_powered = true;
+		goodix_restore_report_rate_locked(cd);
+	}
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
+}
+
 #define GOODIX_SLEEP_CMD	0x84
 int brl_suspend(struct goodix_ts_core *cd)
 {
@@ -350,7 +369,7 @@ int brl_gesture(struct goodix_ts_core *cd, int gesture_type)
 	return 0;
 }
 
-static int brl_reset(struct goodix_ts_core *cd, int delay)
+static int brl_reset_locked(struct goodix_ts_core *cd, int delay)
 {
 	ts_info("chip_reset");
 
@@ -363,6 +382,24 @@ static int brl_reset(struct goodix_ts_core *cd, int delay)
 		msleep(delay);
 
 	return brl_select_spi_mode(cd);
+}
+
+static int brl_reset(struct goodix_ts_core *cd, int delay)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_reset_locked(cd, delay);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_powered = false;
+	ret = brl_reset_locked(cd, delay);
+	/* Short ISP resets must never receive normal-firmware commands. */
+	if (!ret && delay >= GOODIX_NORMAL_RESET_DELAY_MS) {
+		cd->report_rate_powered = true;
+		goodix_restore_report_rate_locked(cd);
+	}
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
 }
 
 static int brl_irq_enbale(struct goodix_ts_core *cd, bool enable)
@@ -406,7 +443,7 @@ static int brl_write(struct goodix_ts_core *cd, unsigned int addr,
 #define CMD_ACK_OK               0x80
 
 #define GOODIX_CMD_RETRY 6
-static int brl_send_cmd(struct goodix_ts_core *cd,
+static int brl_send_cmd_locked(struct goodix_ts_core *cd,
 	struct goodix_ts_cmd *cmd)
 {
 	int ret, retry, i;
@@ -455,6 +492,51 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 	}
 	ts_err("failed get valid cmd ack");
 	return -EINVAL;
+}
+
+/* Serialize the complete mailbox write/ACK transaction on M2468 MP. */
+static int brl_send_cmd(struct goodix_ts_core *cd, struct goodix_ts_cmd *cmd)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_send_cmd_locked(cd, cmd);
+	mutex_lock(&cd->cmd_lock);
+	ret = brl_send_cmd_locked(cd, cmd);
+	mutex_unlock(&cd->cmd_lock);
+	return ret;
+}
+
+/* Caller holds report_rate_lock, including across complete config sessions. */
+static void goodix_restore_report_rate_locked(struct goodix_ts_core *cd)
+{
+	struct goodix_ts_cmd cmd = { 0 };
+	int ret;
+
+	if (!cd->is_m2468 || !cd->report_rate_ready ||
+	    !cd->report_rate_powered || cd->report_rate_blocked ||
+	    !cd->ic_info.misc.cmd_addr)
+		return;
+
+	/* Stock M2468 MP default, not a numeric Hz selector or game mode. */
+	cmd.len = 5;
+	cmd.cmd = 0x9d;
+	cmd.data[0] = 2;
+	ret = cd->hw_ops->send_cmd(cd, &cmd);
+	if (ret)
+		ts_err("M2468 MP default 180Hz command failed: %d", ret);
+	else
+		ts_info("M2468 MP default 180Hz command acknowledged");
+}
+
+/* Keep basic touch available on failure; no additional retry loop. */
+void goodix_restore_report_rate(struct goodix_ts_core *cd)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	goodix_restore_report_rate_locked(cd);
+	mutex_unlock(&cd->report_rate_lock);
 }
 
 #pragma  pack(1)
@@ -533,7 +615,7 @@ static int send_cfg_cmd(struct goodix_ts_core *cd,
 	return 0;
 }
 
-static int brl_send_config(struct goodix_ts_core *cd, u8 *cfg, int len)
+static int brl_send_config_locked(struct goodix_ts_core *cd, u8 *cfg, int len)
 {
 	int ret;
 	u8 *tmp_buf;
@@ -624,7 +706,21 @@ exit:
 /*
  * return: return config length on succes, other wise return < 0
  **/
-static int brl_read_config(struct goodix_ts_core *cd, u8 *cfg, int size)
+static int brl_send_config(struct goodix_ts_core *cd, u8 *cfg, int len)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_send_config_locked(cd, cfg, len);
+	mutex_lock(&cd->report_rate_lock);
+	ret = brl_send_config_locked(cd, cfg, len);
+	if (!ret)
+		goodix_restore_report_rate_locked(cd);
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
+}
+
+static int brl_read_config_locked(struct goodix_ts_core *cd, u8 *cfg, int size)
 {
 	int ret;
 	struct goodix_ts_cmd cfg_cmd;
@@ -694,6 +790,19 @@ exit:
 		return -EINVAL;
 	return cfg_head.cfg_len + sizeof(cfg_head);
 }
+
+static int brl_read_config(struct goodix_ts_core *cd, u8 *cfg, int size)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_read_config_locked(cd, cfg, size);
+	mutex_lock(&cd->report_rate_lock);
+	ret = brl_read_config_locked(cd, cfg, size);
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
+}
+
 
 /*
  *	return: 0 for no error.
