@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/gpio.h>
-#include <linux/interrupt.h>
-#include <linux/completion.h>
+#include <linux/ktime.h>
 #include "dsi_display.h"
 #include "dsi_panel.h"
 #include "dsi_clk.h"
@@ -200,37 +199,38 @@ static int note_bl_brightness(void *ctx, u32 level)
 	return rc < 0 ? rc : rc || atomic_read(&p->esd_recovery_pending) ? -EIO : 0;
 }
 
-static irqreturn_t note_bl_te_irq(int irq, void *data)
-{
-	(void)irq;
-	complete(data);
-	return IRQ_HANDLED;
-}
-
 static int note_bl_sync(void *ctx)
 {
 	struct dsi_panel *p = ctx;
 	struct dsi_display *d = container_of(p->host, struct dsi_display, host);
-	DECLARE_COMPLETION_ONSTACK(te);
-	int irq, rc;
+	ktime_t deadline = ktime_add_us(ktime_get(), 100000);
+	bool seen_low = false;
+	int level;
 
-	/* panel_lock serializes the existing ESD GPIO-TE checker. This private
-	 * GPIO IRQ needs neither SDE resources nor a worker taking panel_lock.
-	 * No wake_up stub, RDPTR counter, timer, or stale TE qualifies as sync.
+	/* TLMM IRQ request_resources switches the pad to GPIO and free_irq
+	 * does not restore mdp_vsync. Never request this pin or its IRQ here.
+	 * msm_gpio_get only reads the input register, including while the
+	 * pad remains muxed to MDP. Sleep between samples; no busy wait or
+	 * worker needing display_lock/panel_lock. A pre-existing high level
+	 * is not an edge. Missing/unsampled pulses fail without remuxing TE.
 	 */
 	if (!gpio_is_valid(d->disp_te_gpio))
 		return -ENODEV;
-	irq = gpio_to_irq(d->disp_te_gpio);
-	if (irq < 0)
-		return irq;
-	rc = request_irq(irq, note_bl_te_irq, IRQF_TRIGGER_RISING, "note-backlight-te", &te);
-	if (rc)
-		return rc;
-	rc = wait_for_completion_timeout(&te, msecs_to_jiffies(100)) ? 0 : -ETIMEDOUT;
-	free_irq(irq, &te);
-	if (atomic_read(&p->esd_recovery_pending))
-		return -EIO;
-	return rc;
+	if (gpio_cansleep(d->disp_te_gpio))
+		return -EOPNOTSUPP;
+	while (ktime_before(ktime_get(), deadline)) {
+		if (atomic_read(&p->esd_recovery_pending))
+			return -EIO;
+		level = gpio_get_value(d->disp_te_gpio);
+		if (level < 0)
+			return level;
+		if (!level)
+			seen_low = true;
+		else if (seen_low)
+			return atomic_read(&p->esd_recovery_pending) ? -EIO : 0;
+		usleep_range(5, 10);
+	}
+	return -ETIMEDOUT;
 }
 
 static void note_bl_wait(void *ctx, u32 ms)

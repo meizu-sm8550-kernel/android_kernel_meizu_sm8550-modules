@@ -25,11 +25,21 @@ Transactions and recovery
 
 The existing display and panel transaction locks serialize normal requests,
 local HBM restoration, modes and low-power transitions. The driver votes DSI
-core and link clocks over each transaction. A PWM/DC switch waits for a fresh
-physical TE GPIO rising edge using a temporary IRQ and completion. This is
-serialized with the existing ESD TE check by panel_lock and does not depend on
-an asynchronous SDE worker acquiring that same lock. IRQ conflicts, missing
-GPIO, timeout, transfer failure and clock errors are returned to the caller.
+core and link clocks over each transaction. A PWM/DC switch samples the existing
+TE input until a fresh low-to-high transition, with a shared 100 ms deadline
+and a 5-10 us sleep between samples. The Qualcomm GPIO get callback only reads
+the input register; it does not request the pin, change direction or mux, or
+allocate an IRQ. GPIO IRQ allocation must never be used here: TLMM's IRQ resource
+callback changes the pad to GPIO, disconnecting MDP's external TE input, and
+free_irq does not restore mdp_vsync. This caused repeated frame timeouts and
+HWC display power recovery with the initial implementation.
+
+An already-high input, stale software vblank count or a timer is not an edge.
+Sleeping GPIO providers are rejected; stuck/missed pulses time out and leave
+ordinary state invalid for retry. Sampling remains subject to scheduling and
+pulse width, so hardware TE sampling reliability still requires validation.
+This path needs no SDE worker that could block on display_lock or panel_lock.
+Missing GPIO, timeout, transfer failure and clock errors reach the caller.
 For 30/60/120 Hz modes, a full switch temporarily disables a known nonzero
 ADFR setting and restores it afterward. Unknown ADFR state is first set to OFF.
 Failures preserve the first error and only successful sends establish cached

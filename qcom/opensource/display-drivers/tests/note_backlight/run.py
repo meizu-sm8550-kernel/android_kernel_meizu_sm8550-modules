@@ -31,7 +31,7 @@ code = code.replace("/* HBM_ADFR */", "\n".join(function(hbm, signature) for sig
     "static struct dsi_panel_cmd_set *note_set(", "static int note_check_set(", "static int note_check_packet(",
     "static int note_send(", "int dsi_note_hbm_backlight_adfr(")))
 code = code.replace("/* HBM_INVALIDATE */", "\n".join([
-    
+
     function(hbm, "void dsi_note_hbm_invalidate("),
     function(hbm, "void dsi_note_hbm_low_power(")]))
 code = code.replace("/* REAL_LIFECYCLE */", "\n".join(function(source, "int " + name + "(") for name in (
