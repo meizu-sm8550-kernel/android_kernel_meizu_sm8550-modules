@@ -1149,8 +1149,8 @@ static void goodix_ts_report_pen(struct input_dev *dev,
 	if (pen_data->coords.status == TS_TOUCH) {
 		input_report_key(dev, BTN_TOUCH, 1);
 		input_report_key(dev, pen_data->coords.tool_type, 1);
-		input_report_abs(dev, ABS_X, pen_data->coords.x);
-		input_report_abs(dev, ABS_Y, pen_data->coords.y);
+		goodix_report_coordinate(dev, ABS_X, pen_data->coords.x);
+		goodix_report_coordinate(dev, ABS_Y, pen_data->coords.y);
 		input_report_abs(dev, ABS_PRESSURE, pen_data->coords.p);
 		input_report_abs(dev, ABS_TILT_X, pen_data->coords.tilt_x);
 		input_report_abs(dev, ABS_TILT_Y, pen_data->coords.tilt_y);
@@ -1198,9 +1198,9 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 
 			input_mt_slot(dev, i);
 			input_mt_report_slot_state(dev, MT_TOOL_FINGER, true);
-			input_report_abs(dev, ABS_MT_POSITION_X,
+			goodix_report_coordinate(dev, ABS_MT_POSITION_X,
 					touch_data->coords[i].x);
-			input_report_abs(dev, ABS_MT_POSITION_Y,
+			goodix_report_coordinate(dev, ABS_MT_POSITION_Y,
 					touch_data->coords[i].y);
 			input_report_abs(dev, ABS_MT_TOUCH_MAJOR,
 					touch_data->coords[i].w);
