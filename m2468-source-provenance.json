@@ -32,6 +32,19 @@
     "runtime_validated": false,
     "local_import_crc_count": 127,
     "framework_workaround_must_be_removed": true,
-    "other_profiles_unchanged": true
+    "other_profiles_unchanged": true,
+    "user_confirmation": "Coordinates confirmed fixed by the user before the report-rate change."
+  },
+  "touch_rate_candidate": {
+    "scope": "Restore stock default 180Hz command for brl-d / board3,5 only",
+    "runtime_validated": false,
+    "local_import_crc_count": 129,
+    "selected_module_count": 388,
+    "selected_delta": [
+      "goodix_ts"
+    ],
+    "tests": "Host protocol/ACK, profile, recovery and lifecycle concurrency; existing coordinate reporter retained",
+    "firmware_requests": "Note RESET/CONFIG deferred out of IRQ; independent suspend/update/remove blockers",
+    "historical_full_chain_repaired": false
   }
 }
