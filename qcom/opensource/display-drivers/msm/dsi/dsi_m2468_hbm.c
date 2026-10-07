@@ -105,6 +105,7 @@ void dsi_m2468_hbm_invalidate(struct dsi_panel *panel, bool initialized)
 {
 	if (!panel->m2468_hbm.supported)
 		return;
+	dsi_m2468_backlight_invalidate(panel);
 	m2468_clear_ready(panel);
 	m2468_hbm_invalidate(&panel->m2468_hbm.state, initialized);
 	if (initialized)
@@ -115,6 +116,7 @@ void dsi_m2468_hbm_low_power(struct dsi_panel *panel, bool low_power)
 {
 	if (!panel->m2468_hbm.supported)
 		return;
+	dsi_m2468_backlight_invalidate(panel);
 	m2468_clear_ready(panel);
 	panel->m2468_hbm.low_power = low_power;
 	panel->m2468_hbm.state.generation++;
@@ -135,7 +137,8 @@ void dsi_m2468_hbm_init(struct dsi_panel *panel)
 	root = of_find_node_by_path("/");
 	if (!root)
 		return;
-	rc = of_property_read_u32_array(root, "meizu,board-id", board, 2);
+	rc = of_property_count_u32_elems(root, "meizu,board-id") == 2 ?
+		of_property_read_u32_array(root, "meizu,board-id", board, 2) : -EINVAL;
 	of_node_put(root);
 	if (rc || board[0] != 3 || board[1] != 5)
 		return;
@@ -257,6 +260,8 @@ static int m2468_send(void *ctx, enum m2468_hbm_command command, u32 value)
 	u32 i;
 	int rc;
 
+	if (command == M2468_LOCAL_ON || command == M2468_LOCAL_OFF)
+		dsi_m2468_backlight_invalidate(p);
 	for (i = 0; i < set->count; i++) {
 		/* Private descriptor/payload: immutable mode tables survive retries. */
 		cmd = set->cmds[i];
@@ -289,6 +294,35 @@ static int m2468_send(void *ctx, enum m2468_hbm_command command, u32 value)
 			usleep_range(cmd.post_wait_ms * 1000, cmd.post_wait_ms * 1000 + 10);
 	}
 	return 0;
+}
+
+int dsi_m2468_hbm_backlight_adfr(struct dsi_panel *p, u32 value)
+{
+	struct m2468_hbm_state *s = &p->m2468_hbm.state;
+	int rc;
+
+	/* Fixed 144/90Hz modes must not even query these optional tables. */
+	if (!p->cur_mode ||
+	    (p->cur_mode->timing.refresh_rate != 120 &&
+	     p->cur_mode->timing.refresh_rate != 60 &&
+	     p->cur_mode->timing.refresh_rate != 30))
+		return -EOPNOTSUPP;
+	rc = m2468_check_set(m2468_set(p, M2468_ADFR, 0), 9, DSI_CMD_SET_STATE_LP);
+	if (!rc)
+		rc = m2468_check_set(m2468_set(p, M2468_ADFR, 1), 18, DSI_CMD_SET_STATE_LP);
+	if (!rc)
+		rc = m2468_check_packet(m2468_set(p, M2468_ADFR, 1), 15,
+				       (const u8 *)"\xb1\xff\xff\xff\x77", 5);
+	if (!rc && value && m2468_hbm_adfr_byte(value) < 0)
+		rc = -EINVAL;
+	if (!rc)
+		rc = m2468_send(p, M2468_ADFR, value);
+	if (!rc && atomic_read(&p->esd_recovery_pending))
+		rc = -EIO;
+	s->adfr_valid = !rc;
+	if (!rc)
+		s->adfr = value;
+	return rc < 0 ? rc : rc ? -EIO : 0;
 }
 
 static int m2468_restore(void *ctx)
