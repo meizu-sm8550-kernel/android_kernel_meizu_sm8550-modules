@@ -277,6 +277,7 @@ void sde_encoder_get_hw_resources(struct drm_encoder *encoder,
  * @encoder:	encoder pointer
  */
 void sde_encoder_early_wakeup(struct drm_encoder *drm_enc);
+int sde_encoder_m2468_early_wakeup(struct drm_encoder *drm_enc);
 
 /**
  * sde_encoder_register_vblank_callback - provide callback to encoder that

@@ -2491,6 +2491,16 @@ static int sde_encoder_resource_control(struct drm_encoder *drm_enc,
 	return ret;
 }
 
+/* M2468's stock backlight path uses the synchronous resource-control event.
+ * The public early-wakeup helper queues work, which can run after the caller
+ * has already begun waiting for vblank during a display transition.
+ */
+int sde_encoder_m2468_early_wakeup(struct drm_encoder *drm_enc)
+{
+	return sde_encoder_resource_control(drm_enc,
+			SDE_ENC_RC_EVENT_EARLY_WAKEUP);
+}
+
 static void sde_encoder_virt_mode_switch(struct drm_encoder *drm_enc,
 	enum sde_intf_mode intf_mode, struct msm_display_mode *adj_mode)
 {
