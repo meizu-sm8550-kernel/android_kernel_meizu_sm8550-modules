@@ -29,6 +29,7 @@ typedef uint8_t u8;
 #define SDE_MODE_DPMS_LP1 1
 #define SDE_MODE_DPMS_LP2 2
 #define SDE_MODE_DPMS_OFF 3
+#define MSM_ENC_VBLANK 2
 #define REGULATOR_MODE_IDLE 1
 #define REGULATOR_MODE_NORMAL 2
 #define REGULATOR_MODE_STANDBY 3
@@ -64,11 +65,14 @@ struct dsi_panel { struct mode *cur_mode; bool panel_initialized; int esd_recove
  struct { bool supported, low_power; u32 vblanks; struct note_hbm_state state; } note_hbm;
  struct note_bl_panel note_bl; void *host; };
 struct mipi_dsi_host { int dummy; };
+struct drm_encoder { int marker; };
+struct dsi_bridge { struct { struct drm_encoder *encoder; } base; };
 struct dsi_ctrl { u32 cmd_len, pending_cmd_flags; bool owned, post_tx_queued;
  void *post_cmd_tx_workq; int post_cmd_tx_work; };
 struct dsi_display_ctrl { struct dsi_ctrl *ctrl; };
 struct dsi_display { struct dsi_panel *panel; bool trusted_vm_env, hw_ownership;
- void *dsi_clk_handle; struct mipi_dsi_host host; int disp_te_gpio; u32 ctrl_count; struct dsi_display_ctrl ctrl[1]; void *tx_cmd_buf; };
+	void *dsi_clk_handle; struct mipi_dsi_host host; struct dsi_bridge *bridge;
+	int disp_te_gpio; u32 ctrl_count; struct dsi_display_ctrl ctrl[1]; void *tx_cmd_buf; };
 #define container_of(ptr,type,member) ((type *)((char *)(ptr)-offsetof(type,member)))
 #define to_dsi_display(ptr) container_of(ptr, struct dsi_display, host)
 #define lockdep_assert_held(lock) CHECK(*(lock)==1)
@@ -76,10 +80,7 @@ static void mutex_lock(int *lock) { CHECK(!(*lock)++); }
 static void mutex_unlock(int *lock) { CHECK((*lock)--==1); }
 static int sent, fail_packet, positive_packet, esd_packet, votes, fail_vote, positive_vote;
 static int syncs, time_out, delays, legacy_sends, cleaned, lifecycle_rc;
-static int gpio_reads, gpio_error, gpio_sleeping, gpio_stuck_high, gpio_initial_high, gpio_esd;
-static bool te_mux_is_mdp_vsync = true;
-static int64_t fake_us;
-static int te_phase_us, te_pulse_us = 80;
+static int wake_error, wait_error, wait_esd, vblank_waits;
 static u32 last_delay;
 static int clock_depth, ready_notifications;
 static u8 packets[256][64];
@@ -128,28 +129,18 @@ static int dsi_display_clk_ctrl(void *handle, u32 type, u32 state) {
  else { CHECK(state==DSI_CLK_OFF && clock_depth>0);clock_depth--; }
  return rc;
 }
-typedef int64_t ktime_t;
-static ktime_t ktime_get(void) { return fake_us++; }
-static ktime_t ktime_add_us(ktime_t t, u64 us) { return t + us; }
-static bool ktime_before(ktime_t a, ktime_t b) { return a < b; }
 static void usleep_range(u32 a,u32 b) {
  CHECK(b>=a);
- if(a==5) { CHECK(b==10); fake_us+=10; return; }
  last_delay=a/1000;delays++;
 }
-static bool gpio_is_valid(int gpio) { return gpio>=0; }
-static int gpio_cansleep(int gpio) { CHECK(gpio==86);return gpio_sleeping; }
-static int gpio_get_value(int gpio) {
- CHECK(gpio==86 && te_mux_is_mdp_vsync);gpio_reads++;
- if(gpio_reads==1)syncs++;
- if(gpio_error)return -EIO;
- if(gpio_esd && gpio_reads==2)active_display->panel->esd_recovery_pending=1;
- if(gpio_stuck_high)return 1;
- if(time_out)return 0;
- if(gpio_initial_high && gpio_reads<=2)return 1;
- if(gpio_initial_high)return gpio_reads % 2;
- u32 period=1000000/active_display->panel->cur_mode->timing.refresh_rate;
- return (fake_us + te_phase_us) % period < te_pulse_us;
+static int sde_encoder_note_early_wakeup(struct drm_encoder *encoder) {
+ CHECK(encoder && active_display->bridge->base.encoder==encoder);
+ syncs++;return wake_error;
+}
+static int sde_encoder_wait_for_event(struct drm_encoder *encoder,int event) {
+ CHECK(encoder && event==MSM_ENC_VBLANK);vblank_waits++;
+ if(wait_esd)active_display->panel->esd_recovery_pending=1;
+ return time_out ? -ETIMEDOUT : wait_error;
 }
 static int dsi_panel_update_backlight(struct dsi_panel *p,u32 v) { (void)p;(void)v;legacy_sends++;return 0; }
 static int backlight_device_set_brightness(void *p,u32 v) { (void)p;(void)v;return -99; }
@@ -188,8 +179,7 @@ static void reset_trace(void) {
  sent=fail_packet=positive_packet=esd_packet=votes=fail_vote=positive_vote=0;
  syncs=time_out=delays=legacy_sends=cleaned=lifecycle_rc=0;
  last_delay=0;prepare_error=0;clock_depth=0;
- gpio_reads=gpio_error=gpio_sleeping=gpio_stuck_high=gpio_initial_high=gpio_esd=0;fake_us=0;te_phase_us=0;te_pulse_us=80;
- CHECK(te_mux_is_mdp_vsync);
+ wake_error=wait_error=wait_esd=vblank_waits=0;
 }
 static int set(struct dsi_panel *p,u32 level) {
  p->panel_lock=1;
@@ -218,7 +208,8 @@ int main(void) {
  struct mode mode={.priv_info=&fixture,.timing.refresh_rate=144};
  struct dsi_ctrl ctrl={0};
  struct dsi_panel p={.cur_mode=&mode,.bl_config={.type=DSI_BACKLIGHT_DCS,.bl_inverted_dbv=true}};
- struct dsi_display d={.panel=&p,.hw_ownership=true,.disp_te_gpio=86,.ctrl_count=1,.ctrl={{&ctrl}}};
+ struct drm_encoder encoder={0};struct dsi_bridge bridge={.base.encoder=&encoder};
+ struct dsi_display d={.panel=&p,.hw_ownership=true,.bridge=&bridge,.ctrl_count=1,.ctrl={{&ctrl}}};
  p.host=&d.host;active_display=&d;
  const u32 levels[]={0,1,408,409,1106,1107,4095};
  const u32 rates[]={144,120,90,60,30}, waits[]={14,18,26,34,66};
@@ -226,7 +217,7 @@ int main(void) {
   fresh(&p);mode.timing.refresh_rate=rates[r];u32 level=levels[n];
   CHECK(!set(&p,level)); CHECK(!legacy_sends && votes==2);
   CHECK(sent==(level ? 51 : 1));CHECK(syncs==(level ? 1 : 0));
-  CHECK(te_mux_is_mdp_vsync && delays==syncs);if(level)CHECK(last_delay==waits[r]);
+  CHECK(delays==syncs && vblank_waits==syncs);if(level)CHECK(last_delay==waits[r]);
   if(level) {
    CHECK(p.note_bl.state.valid && p.note_bl.state.level==level);
    CHECK(packets[5][0]==0x51 && packets[5][1]==(level>>8) && packets[5][2]==(level&255));
@@ -266,19 +257,15 @@ int main(void) {
   CHECK(sent==(fail==1 ? 0 : 51));
  }
  fresh(&p);time_out=1;CHECK(set(&p,1107)==-ETIMEDOUT && !sent && !p.note_bl.state.valid);
- CHECK(te_mux_is_mdp_vsync && fake_us>=100000 && fake_us<100100);
- fresh(&p);gpio_stuck_high=1;CHECK(set(&p,1107)==-ETIMEDOUT && !sent && te_mux_is_mdp_vsync);
- fresh(&p);gpio_initial_high=1;CHECK(!set(&p,1107) && gpio_reads>=5 && te_mux_is_mdp_vsync);
- for(u32 r=0;r<5;r++) for(u32 phase=0;phase<3;phase++) {
-  fresh(&p);mode.timing.refresh_rate=rates[r];te_phase_us=phase*100;
-  CHECK(!set(&p,1107) && gpio_reads>1 && fake_us<100000 && te_mux_is_mdp_vsync);
- }
+ CHECK(syncs==1 && vblank_waits==1);
+ fresh(&p);wait_error=-EWOULDBLOCK;CHECK(!set(&p,1107) && sent==51);
+ fresh(&p);wake_error=-EIO;CHECK(set(&p,1107)==-EIO && !sent && !vblank_waits);
+ fresh(&p);wait_error=-EIO;CHECK(set(&p,1107)==-EIO && !sent && vblank_waits==1);
+ fresh(&p);wait_esd=1;CHECK(set(&p,1107)==-EIO && !sent && !p.note_bl.state.valid);
+ fresh(&p);d.bridge=NULL;CHECK(set(&p,1107)==-ENODEV && !sent);d.bridge=&bridge;
+ fresh(&p);bridge.base.encoder=NULL;CHECK(set(&p,1107)==-ENODEV && !sent);bridge.base.encoder=&encoder;
  mode.timing.refresh_rate=144;
- fresh(&p);gpio_error=1;CHECK(set(&p,1107)==-EIO && !sent && te_mux_is_mdp_vsync);
- fresh(&p);gpio_sleeping=1;CHECK(set(&p,1107)==-EOPNOTSUPP && !sent && !gpio_reads);
- fresh(&p);gpio_esd=1;CHECK(set(&p,1107)==-EIO && !sent && !p.note_bl.state.valid);
- fresh(&p);d.disp_te_gpio=-1;CHECK(set(&p,1107)==-ENODEV && !sent);d.disp_te_gpio=86;
- puts("PASS: passive TE low-to-high sampling, stale high, stuck levels, timeout, ESD, read errors, mux preservation and clock failures");
+ puts("PASS: synchronous SDE wake/vblank, disabled encoder, timeout, ESD and clock failures");
  for(u32 c=0;c<5;c++) {
   u8 blob[4096]={0};u32 size=0;
   for(u32 j=0;j<fixture.cmd_sets[c].count;j++) {
@@ -328,7 +315,7 @@ int main(void) {
  puts("PASS: complete five-table validation, exact PWM/DC properties and real name/node/board profile");
  fresh(&p);CHECK(!set(&p,1107));p.panel_lock=0;CHECK(!dsi_panel_disable(&p));CHECK(!p.note_bl.state.valid);
  CHECK(!dsi_panel_enable(&p));CHECK(!p.note_bl.state.valid && p.note_hbm.state.phase==NOTE_HBM_OFF);
- p.power_mode=SDE_MODE_DPMS_ON;reset_trace();CHECK(!set(&p,1107));CHECK(sent==51);
+ CHECK(p.power_mode==SDE_MODE_DPMS_ON);reset_trace();CHECK(!set(&p,1107));CHECK(sent==51);
  for(int lp=0;lp<2;lp++) {
   p.panel_lock=0;CHECK(!(lp ? dsi_panel_set_lp2(&p) : dsi_panel_set_lp1(&p)));CHECK(!p.note_bl.state.valid);
   reset_trace();CHECK(set(&p,1107)==-EOPNOTSUPP && !sent);
@@ -407,6 +394,6 @@ int main(void) {
   p.panel_lock=0;clock_depth=0;
  }
  puts("PASS: real ADFR helpers and coupled HBM run/send/restore/setter: saved ADFR, phase, ready isolation, nested votes, recovery failures");
- puts("ALL NOTE BACKLIGHT HOST TESTS PASSED (hardware, GPIO samples and time are test doubles)");
+ puts("ALL NOTE BACKLIGHT HOST TESTS PASSED (hardware, SDE events and time are test doubles)");
  return 0;
 }

@@ -4955,6 +4955,8 @@ int dsi_panel_enable(struct dsi_panel *panel)
 		}
 	}
 	panel->panel_initialized = true;
+	if (panel->note_hbm.supported)
+		panel->power_mode = SDE_MODE_DPMS_ON;
 	dsi_note_hbm_invalidate(panel, true);
 
 error:

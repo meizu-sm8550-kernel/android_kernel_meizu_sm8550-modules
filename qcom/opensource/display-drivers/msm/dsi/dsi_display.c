@@ -8833,7 +8833,16 @@ int dsi_display_enable(struct dsi_display *display)
 			return -EINVAL;
 		}
 
+		mutex_lock(&display->display_lock);
+		mutex_lock(&display->panel->panel_lock);
 		display->panel->panel_initialized = true;
+		if (display->panel->note_hbm.supported &&
+		    !display->trusted_vm_env) {
+			display->panel->power_mode = SDE_MODE_DPMS_ON;
+			dsi_note_hbm_invalidate(display->panel, true);
+		}
+		mutex_unlock(&display->panel->panel_lock);
+		mutex_unlock(&display->display_lock);
 		DSI_DEBUG("cont splash enabled, display enable not required\n");
 		dsi_display_panel_id_notification(display);
 

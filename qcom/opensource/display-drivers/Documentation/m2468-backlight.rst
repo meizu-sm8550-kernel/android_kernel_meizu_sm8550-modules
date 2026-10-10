@@ -25,21 +25,21 @@ Transactions and recovery
 
 The existing display and panel transaction locks serialize normal requests,
 local HBM restoration, modes and low-power transitions. The driver votes DSI
-core and link clocks over each transaction. A PWM/DC switch samples the existing
-TE input until a fresh low-to-high transition, with a shared 100 ms deadline
-and a 5-10 us sleep between samples. The Qualcomm GPIO get callback only reads
-the input register; it does not request the pin, change direction or mux, or
-allocate an IRQ. GPIO IRQ allocation must never be used here: TLMM's IRQ resource
-callback changes the pad to GPIO, disconnecting MDP's external TE input, and
-free_irq does not restore mdp_vsync. This caused repeated frame timeouts and
-HWC display power recovery with the initial implementation.
+core and link clocks over each transaction. A PWM/DC switch uses the vendor
+sequence: synchronously request the SDE early-wakeup resource event, then wait
+for the encoder's RD_PTR vblank before sending the table. The synchronous helper
+avoids queuing early-wakeup work behind the caller's vblank wait. If the physical
+encoder is not enabled during first handoff, the wait returns EWOULDBLOCK and
+the table is sent as in the vendor path. Other wake/wait errors invalidate the
+state for retry. This never allocates a GPIO IRQ or reads TE through GPIO: TLMM's
+IRQ request remuxes the shared TE pad away from mdp_vsync, while passive GPIO
+sampling can miss short pulses and delay or reject wakeup brightness.
 
-An already-high input, stale software vblank count or a timer is not an edge.
-Sleeping GPIO providers are rejected; stuck/missed pulses time out and leave
-ordinary state invalid for retry. Sampling remains subject to scheduling and
-pulse width, so hardware TE sampling reliability still requires validation.
-This path needs no SDE worker that could block on display_lock or panel_lock.
-Missing GPIO, timeout, transfer failure and clock errors reach the caller.
+Both normal panel ON and continuous-splash handoff establish the Note panel's
+DPMS ON state. Continuous splash also invalidates HBM/backlight state so the
+first brightness request rebuilds the table instead of treating inherited boot
+state as known. The handoff state update is serialized with display/panel locks.
+Encoder, vblank, transfer and clock errors reach the caller.
 For 30/60/120 Hz modes, a full switch temporarily disables a known nonzero
 ADFR setting and restores it afterward. Unknown ADFR state is first set to OFF.
 Failures preserve the first error and only successful sends establish cached
@@ -73,7 +73,7 @@ Verification boundary
 Run tests/note_backlight/run.py with a host C compiler; CC may select another
 compiler. The tests compile the real functions with hardware substitutes and
 exercise packets, failures, parsing and lifecycle boundaries. They are not a
-hardware or optical verification of green/purple spatial tint.
+hardware wakeup/latency or optical verification.
 
 The local maintenance layer creates a new isolated module candidate from
 verified retained objects and replaces only msm_drm in the current 388-module

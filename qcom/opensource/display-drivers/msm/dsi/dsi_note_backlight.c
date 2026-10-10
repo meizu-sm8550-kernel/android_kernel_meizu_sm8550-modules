@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include <linux/gpio.h>
-#include <linux/ktime.h>
 #include "dsi_display.h"
+#include "dsi_drm.h"
 #include "dsi_panel.h"
 #include "dsi_clk.h"
 #include "dsi_ctrl.h"
+#include "sde_encoder.h"
 #include "dsi_note_backlight.h"
 
 /* Dedicated allocation/unwind for the five mandatory Note tables. */
@@ -203,34 +203,27 @@ static int note_bl_sync(void *ctx)
 {
 	struct dsi_panel *p = ctx;
 	struct dsi_display *d = container_of(p->host, struct dsi_display, host);
-	ktime_t deadline = ktime_add_us(ktime_get(), 100000);
-	bool seen_low = false;
-	int level;
+	struct drm_encoder *encoder;
+	int rc;
 
-	/* TLMM IRQ request_resources switches the pad to GPIO and free_irq
-	 * does not restore mdp_vsync. Never request this pin or its IRQ here.
-	 * msm_gpio_get only reads the input register, including while the
-	 * pad remains muxed to MDP. Sleep between samples; no busy wait or
-	 * worker needing display_lock/panel_lock. A pre-existing high level
-	 * is not an edge. Missing/unsampled pulses fail without remuxing TE.
+	/* Stock PWM/DC switches wake SDE synchronously, then wait for its
+	 * RD_PTR vblank event. GPIO IRQ allocation remuxes the shared TE pad,
+	 * while passive GPIO sampling can miss short pulses during wakeup.
 	 */
-	if (!gpio_is_valid(d->disp_te_gpio))
+	if (!d->bridge || !(encoder = d->bridge->base.encoder))
 		return -ENODEV;
-	if (gpio_cansleep(d->disp_te_gpio))
-		return -EOPNOTSUPP;
-	while (ktime_before(ktime_get(), deadline)) {
-		if (atomic_read(&p->esd_recovery_pending))
-			return -EIO;
-		level = gpio_get_value(d->disp_te_gpio);
-		if (level < 0)
-			return level;
-		if (!level)
-			seen_low = true;
-		else if (seen_low)
-			return atomic_read(&p->esd_recovery_pending) ? -EIO : 0;
-		usleep_range(5, 10);
-	}
-	return -ETIMEDOUT;
+	if (atomic_read(&p->esd_recovery_pending))
+		return -EIO;
+	rc = sde_encoder_note_early_wakeup(encoder);
+	if (rc)
+		return rc;
+	rc = sde_encoder_wait_for_event(encoder, MSM_ENC_VBLANK);
+	if (atomic_read(&p->esd_recovery_pending))
+		return -EIO;
+	/* The physical encoder has not been enabled during first handoff.
+	 * Stock ignores this wait result and still sends the PWM/DC table.
+	 */
+	return rc == -EWOULDBLOCK ? 0 : rc;
 }
 
 static void note_bl_wait(void *ctx, u32 ms)
