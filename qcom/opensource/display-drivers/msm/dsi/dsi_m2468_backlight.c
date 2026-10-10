@@ -210,7 +210,10 @@ static int m2468_bl_sync(void *ctx)
 	 * RD_PTR vblank event. GPIO IRQ allocation remuxes the shared TE pad,
 	 * while passive GPIO sampling can miss short pulses during wakeup.
 	 */
-	if (!d->bridge || !(encoder = d->bridge->base.encoder))
+	if (!d->bridge)
+		return -ENODEV;
+	encoder = d->bridge->base.encoder;
+	if (!encoder)
 		return -ENODEV;
 	if (atomic_read(&p->esd_recovery_pending))
 		return -EIO;
