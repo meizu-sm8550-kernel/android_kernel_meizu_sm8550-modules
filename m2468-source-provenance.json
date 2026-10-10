@@ -46,5 +46,10 @@
     "tests": "Host protocol/ACK, profile, recovery and lifecycle concurrency; existing coordinate reporter retained",
     "firmware_requests": "M2468 RESET/CONFIG deferred out of IRQ; independent suspend/update/remove blockers",
     "historical_full_chain_repaired": false
-  }
+  },
+  "device_codename": "m2468",
+  "supported_devices": [
+    "m2468"
+  ],
+  "organization": "meizu-sm8550-kernel"
 }
