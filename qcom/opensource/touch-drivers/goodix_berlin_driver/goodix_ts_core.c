@@ -371,8 +371,21 @@ static ssize_t goodix_ts_reset_store(struct device *dev,
 
 	if (!buf || count <= 0)
 		return -EINVAL;
-	if (buf[0] != '0')
+	if (core_data->is_m2468 && buf[0] != '0') {
+		int ret;
+
+		mutex_lock(&core_data->m2468.pm_lock);
+		if (atomic_read(&core_data->suspended) ||
+		    READ_ONCE(core_data->report_rate_blocked))
+			ret = -EBUSY;
+		else
+			ret = hw_ops->reset(core_data, GOODIX_NORMAL_RESET_DELAY_MS);
+		mutex_unlock(&core_data->m2468.pm_lock);
+		if (ret)
+			return ret;
+	} else if (buf[0] != '0') {
 		hw_ops->reset(core_data, GOODIX_NORMAL_RESET_DELAY_MS);
+	}
 	return count;
 }
 
@@ -987,6 +1000,14 @@ static int goodix_parse_dt_resolution(struct device_node *node,
 		ts_info("Panel max x and max y inverted\n");
 	}
 
+	if (goodix_is_m2468(node)) {
+		if (board_data->panel_max_x > U16_MAX / 10 ||
+		    board_data->panel_max_y > U16_MAX / 10)
+			return -EINVAL;
+		board_data->panel_max_x *= 10;
+		board_data->panel_max_y *= 10;
+	}
+
 	ret = of_property_read_u32(node, "goodix,panel-max-w",
 				&board_data->panel_max_w);
 	if (ret) {
@@ -1216,11 +1237,76 @@ static void goodix_ts_report_finger(struct input_dev *dev,
 	mutex_unlock(&dev->mutex);
 }
 
+/* IRQ only queues M2468 firmware requests; no new mailbox waits in IRQ. */
+static void goodix_m2468_request_work(struct work_struct *work)
+{
+	struct goodix_ts_core *cd = container_of(work, struct goodix_ts_core,
+					       m2468_request_work);
+	unsigned long requests = xchg(&cd->m2468_requests, 0);
+	bool allowed;
+	int ret;
+
+	mutex_lock(&cd->report_rate_lock);
+	allowed = cd->report_rate_ready && !cd->report_rate_blocked &&
+		  cd->report_rate_powered;
+	mutex_unlock(&cd->report_rate_lock);
+	if (!allowed)
+		return;
+
+	/* Lifecycle blockers drain this worker before entering sleep or ISP. */
+	if (requests & BIT(REQUEST_TYPE_RESET)) {
+		ret = cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
+		if (ret)
+			ts_err("M2468 firmware reset request failed: %d", ret);
+	}
+	if (requests & BIT(REQUEST_TYPE_CONFIG)) {
+		ret = goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
+		if (ret)
+			ts_err("M2468 firmware config request failed: %d", ret);
+	}
+}
+
+static void goodix_m2468_rate_block(struct goodix_ts_core *cd,
+				    unsigned long reason)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_blocked |= reason;
+	mutex_unlock(&cd->report_rate_lock);
+	/* irq_enable(false) uses disable_irq_nosync. Drain old producers too. */
+	synchronize_irq(cd->irq);
+	cancel_work_sync(&cd->m2468_request_work);
+	xchg(&cd->m2468_requests, 0);
+}
+
+static void goodix_m2468_rate_unblock(struct goodix_ts_core *cd,
+				      unsigned long reason)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_blocked &= ~reason;
+	mutex_unlock(&cd->report_rate_lock);
+	goodix_restore_report_rate(cd);
+}
+
 static int goodix_ts_request_handle(struct goodix_ts_core *cd,
 	struct goodix_ts_event *ts_event)
 {
 	struct goodix_ts_hw_ops *hw_ops = cd->hw_ops;
 	int ret = -1;
+
+	if (cd->is_m2468 &&
+	    (ts_event->request_code == REQUEST_TYPE_CONFIG ||
+	     ts_event->request_code == REQUEST_TYPE_RESET)) {
+		if (cd->init_stage == CORE_INIT_STAGE2 &&
+		    !READ_ONCE(cd->report_rate_blocked)) {
+			set_bit(ts_event->request_code, &cd->m2468_requests);
+			schedule_work(&cd->m2468_request_work);
+		}
+		return 0;
+	}
 
 	if (ts_event->request_code == REQUEST_TYPE_CONFIG)
 		ret = goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
@@ -1480,7 +1566,8 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 	core_data->input_dev = input_dev;
 	input_set_drvdata(input_dev, core_data);
 
-	input_dev->name = GOODIX_CORE_DRIVER_NAME;
+	input_dev->name = core_data->is_m2468 ? "main_touch" :
+		GOODIX_CORE_DRIVER_NAME;
 	input_dev->phys = GOOIDX_INPUT_PHYS;
 	input_dev->id.product = 0xDEAD;
 	input_dev->id.vendor = 0xBEEF;
@@ -1501,6 +1588,11 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 			     0, ts_bdata->panel_max_y, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR,
 			     0, ts_bdata->panel_max_w, 0, 0);
+	if (core_data->is_m2468) {
+		input_set_abs_params(input_dev, ABS_MT_WIDTH_MAJOR,
+				     0, ts_bdata->panel_max_w, 0, 0);
+		input_set_capability(input_dev, EV_KEY, KEY_NEXT_FAVORITE);
+	}
 #ifdef INPUT_TYPE_B_PROTOCOL
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 7, 0)
 	input_mt_init_slots(input_dev, GOODIX_MAX_TOUCH,
@@ -1747,7 +1839,7 @@ static void goodix_ts_release_connects(struct goodix_ts_core *core_data)
  * goodix_ts_suspend - Touchscreen suspend function
  * Called by PM/FB/EARLYSUSPEN module to put the device to  sleep
  */
-static int goodix_ts_suspend(struct goodix_ts_core *core_data)
+static int goodix_ts_suspend_locked(struct goodix_ts_core *core_data)
 {
 	struct goodix_ext_module *ext_module, *next;
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
@@ -1759,6 +1851,7 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 
 	ts_info("Suspend start");
 	atomic_set(&core_data->suspended, 1);
+	goodix_m2468_rate_block(core_data, GOODIX_RATE_SUSPEND);
 	/* disable irq */
 	hw_ops->irq_enable(core_data, false);
 
@@ -1788,8 +1881,16 @@ static int goodix_ts_suspend(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 	/* enter sleep mode or power off */
-	if (hw_ops->suspend)
-		hw_ops->suspend(core_data);
+	if (hw_ops->suspend) {
+		ret = hw_ops->suspend(core_data);
+		if (ret && core_data->is_m2468) {
+			atomic_set(&core_data->suspended, 0);
+			goodix_m2468_rate_unblock(core_data, GOODIX_RATE_SUSPEND);
+			hw_ops->irq_enable(core_data, true);
+			goodix_ts_blocking_notify(NOTIFY_RESUME, NULL);
+			return ret;
+		}
+	}
 
 	/* inform exteranl modules */
 	mutex_lock(&goodix_modules.mutex);
@@ -1816,11 +1917,26 @@ out:
 	return 0;
 }
 
+static int goodix_ts_suspend(struct goodix_ts_core *cd)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return goodix_ts_suspend_locked(cd);
+	mutex_lock(&cd->m2468.pm_lock);
+	if (READ_ONCE(cd->report_rate_blocked) & GOODIX_RATE_REMOVE)
+		ret = -ENODEV;
+	else
+		ret = goodix_ts_suspend_locked(cd);
+	mutex_unlock(&cd->m2468.pm_lock);
+	return ret;
+}
+
 /**
  * goodix_ts_resume - Touchscreen resume function
  * Called by PM/FB/EARLYSUSPEN module to wakeup device
  */
-static int goodix_ts_resume(struct goodix_ts_core *core_data)
+static int goodix_ts_resume_locked(struct goodix_ts_core *core_data)
 {
 	struct goodix_ext_module *ext_module, *next;
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
@@ -1842,6 +1958,11 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 				continue;
 
 			ret = ext_module->funcs->before_resume(core_data, ext_module);
+			if (ret < 0 && core_data->is_m2468) {
+				mutex_unlock(&goodix_modules.mutex);
+				atomic_set(&core_data->suspended, 1);
+				return ret;
+			}
 			if (ret == EVT_CANCEL_RESUME) {
 				mutex_unlock(&goodix_modules.mutex);
 				ts_info("Canceled by module:%s", ext_module->name);
@@ -1852,8 +1973,13 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 	/* reset device or power on*/
-	if (hw_ops->resume)
-		hw_ops->resume(core_data);
+	if (hw_ops->resume) {
+		ret = hw_ops->resume(core_data);
+		if (ret && core_data->is_m2468) {
+			atomic_set(&core_data->suspended, 1);
+			return ret;
+		}
+	}
 
 	mutex_lock(&goodix_modules.mutex);
 	if (!list_empty(&goodix_modules.head)) {
@@ -1874,12 +2000,28 @@ static int goodix_ts_resume(struct goodix_ts_core *core_data)
 	mutex_unlock(&goodix_modules.mutex);
 
 out:
+	goodix_m2468_rate_unblock(core_data, GOODIX_RATE_SUSPEND);
 	/* enable irq */
 	hw_ops->irq_enable(core_data, true);
 	/* open esd */
 	goodix_ts_blocking_notify(NOTIFY_RESUME, NULL);
 	ts_info("Resume end");
 	return 0;
+}
+
+static int goodix_ts_resume(struct goodix_ts_core *cd)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return goodix_ts_resume_locked(cd);
+	mutex_lock(&cd->m2468.pm_lock);
+	if (READ_ONCE(cd->report_rate_blocked) & GOODIX_RATE_REMOVE)
+		ret = -ENODEV;
+	else
+		ret = goodix_ts_resume_locked(cd);
+	mutex_unlock(&cd->m2468.pm_lock);
+	return ret;
 }
 
 #if defined(CONFIG_DRM)
@@ -2001,11 +2143,21 @@ static int goodix_generic_noti_callback(struct notifier_block *self,
 	switch (action) {
 	case NOTIFY_FWUPDATE_START:
 		hw_ops->irq_enable(cd, 0);
+		goodix_m2468_rate_block(cd, GOODIX_RATE_FWUPDATE);
 		break;
 	case NOTIFY_FWUPDATE_SUCCESS:
 	case NOTIFY_FWUPDATE_FAILED:
 		if (hw_ops->read_version(cd, &cd->fw_version))
 			ts_info("failed read fw version info[ignore]");
+		/* Do not clear the ISP blocker unless normal metadata is valid. */
+		if (cd->is_m2468 &&
+		    !hw_ops->read_version(cd, &cd->fw_version) &&
+		    !hw_ops->get_ic_info(cd, &cd->ic_info)) {
+			mutex_lock(&cd->report_rate_lock);
+			cd->report_rate_powered = true;
+			mutex_unlock(&cd->report_rate_lock);
+			goodix_m2468_rate_unblock(cd, GOODIX_RATE_FWUPDATE);
+		}
 		hw_ops->irq_enable(cd, 1);
 		break;
 	default:
@@ -2073,8 +2225,13 @@ skip_goodix_ts_irq_setup:
 	/* create procfs files */
 	goodix_ts_procfs_init(cd);
 #ifdef GOODIX_SUSPEND_GESTURE_ENABLE
-	/* gesture init */
-	gesture_module_init();
+	gesture_module_init(cd);
+#else
+	if (cd->is_m2468) {
+		ret = gesture_module_init(cd);
+		if (ret)
+			ts_err("M2468 gesture initialization failed: %d", ret);
+	}
 #endif
 	/* inspect init */
 	inspect_module_init();
@@ -2182,6 +2339,11 @@ upgrade:
 	 * if not we will send config with interactive mode
 	 */
 	goodix_send_ic_config(cd, CONFIG_TYPE_NORMAL);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_ready = true;
+	cd->report_rate_powered = true;
+	mutex_unlock(&cd->report_rate_lock);
+	goodix_restore_report_rate(cd);
 #ifdef CONFIG_ARCH_QTI_VM
 skip_to_stage2_init:
 #endif
@@ -2192,8 +2354,13 @@ skip_to_stage2_init:
 		goto uninit_fw;
 	}
 	cd->init_stage = CORE_INIT_STAGE2;
+	if (cd->is_m2468) {
+		ret = goodix_m2468_usb_init(cd);
+		if (ret)
+			ts_err("M2468 USB notifier unavailable: %d", ret);
+	}
 	mutex_unlock(&goodix_later_init_tmutex);
-	return 0;
+	complete_and_exit(&cd->init_done, 0);
 
 uninit_fw:
 	goodix_fw_update_uninit();
@@ -2205,7 +2372,7 @@ err_out:
 		cd->ic_configs[i] = NULL;
 	}
 	mutex_unlock(&goodix_later_init_tmutex);
-	return ret;
+	complete_and_exit(&cd->init_done, ret);
 }
 
 static int goodix_start_later_init(struct goodix_ts_core *ts_core)
@@ -2219,6 +2386,7 @@ static int goodix_start_later_init(struct goodix_ts_core *ts_core)
 			PTR_ERR(init_thrd));
 		return -EFAULT;
 	}
+	ts_core->init_started = true;
 	return 0;
 }
 
@@ -2509,6 +2677,12 @@ static int goodix_ts_probe(struct platform_device *pdev)
 	}
 
 	core_data->bus = bus_interface;
+	core_data->is_m2468 = goodix_is_m2468(node);
+	mutex_init(&core_data->report_rate_lock);
+	mutex_init(&core_data->cmd_lock);
+	INIT_WORK(&core_data->m2468_request_work, goodix_m2468_request_work);
+	goodix_m2468_init(core_data);
+	init_completion(&core_data->init_done);
 
 	if (IS_ENABLED(CONFIG_OF) && bus_interface->dev->of_node) {
 		/* parse devicetree property */
@@ -2593,8 +2767,14 @@ skip_to_power_gpio_setup:
 	core_module_prob_sate = CORE_MODULE_PROB_SUCCESS;
 	core_data->ready = true;
 
-	/* Try start a thread to get config-bin info */
-	goodix_start_later_init(core_data);
+	/* Try start a thread to get config-bin info. */
+	ret = goodix_start_later_init(core_data);
+	if (ret) {
+		core_data->ready = false;
+		goodix_ts_unregister_notifier(&core_data->ts_notifier);
+		goodix_ts_power_off(core_data);
+		goto err_out;
+	}
 
 	ts_info("goodix_ts_core probe success");
 	return 0;
@@ -2612,13 +2792,27 @@ static int goodix_ts_remove(struct platform_device *pdev)
 	struct goodix_ts_hw_ops *hw_ops = core_data->hw_ops;
 	struct goodix_ts_esd *ts_esd = &core_data->ts_esd;
 
+	/* Initialization publishes IRQ/sysfs/notifier users asynchronously. */
+	core_data->ready = false;
+	if (core_data->init_started)
+		wait_for_completion(&core_data->init_done);
+	goodix_m2468_usb_exit(core_data);
+	if (core_data->is_m2468 && core_data->init_stage >= CORE_INIT_STAGE2) {
+		mutex_lock(&core_data->m2468.pm_lock);
+		hw_ops->irq_enable(core_data, false);
+		goodix_m2468_rate_block(core_data, GOODIX_RATE_REMOVE);
+		mutex_unlock(&core_data->m2468.pm_lock);
+	}
 	goodix_ts_unregister_notifier(&core_data->ts_notifier);
 	goodix_tools_exit();
 
 	if (core_data->init_stage >= CORE_INIT_STAGE2) {
-	#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
+#ifdef GOODIX_SUSPEND_GESTURE_ENABLE
 		gesture_module_exit();
-	#endif
+#else
+		if (core_data->is_m2468)
+			gesture_module_exit();
+#endif
 		inspect_module_exit();
 		hw_ops->irq_enable(core_data, false);
 
@@ -2656,6 +2850,7 @@ static const struct dev_pm_ops dev_pm_ops = {
 static const struct platform_device_id ts_core_ids[] = {
 	{.name = GOODIX_CORE_DEVICE_NAME},
 	{.name = GOODIX_CORE_DEVICE_2_NAME},
+	{.name = "main_touch"},
 	{}
 };
 MODULE_DEVICE_TABLE(platform, ts_core_ids);

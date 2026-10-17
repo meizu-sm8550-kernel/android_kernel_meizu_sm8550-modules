@@ -42,6 +42,7 @@
 #include <linux/i2c.h>
 #include <linux/spi/spi.h>
 #include "../qts/qts_core_common.h"
+#include "goodix_m2468.h"
 
 #define GOODIX_CORE_DRIVER_NAME			"goodix_ts"
 #define GOODIX_PEN_DRIVER_NAME			"goodix_ts,pen"
@@ -483,6 +484,18 @@ struct goodix_ic_config {
 };
 
 struct goodix_ts_core {
+	bool is_m2468;
+	struct goodix_m2468_state m2468;
+	/* M2468 normal-firmware state, protected by report_rate_lock. */
+	bool report_rate_ready;
+	bool report_rate_powered;
+	unsigned long report_rate_blocked;
+	unsigned long m2468_requests;
+	struct mutex report_rate_lock; /* complete normal-firmware transactions */
+	struct mutex cmd_lock; /* mailbox write plus ACK */
+	struct work_struct m2468_request_work;
+	struct completion init_done;
+	bool init_started;
 	int init_stage;
 	struct platform_device *pdev;
 	struct goodix_fw_version fw_version;
@@ -690,8 +703,15 @@ int goodix_fw_update_init(struct goodix_ts_core *core_data);
 void goodix_fw_update_uninit(void);
 int goodix_do_fw_update(struct goodix_ic_config *ic_config, int mode);
 
+#define GOODIX_RATE_SUSPEND BIT(0)
+#define GOODIX_RATE_FWUPDATE BIT(1)
+#define GOODIX_RATE_REMOVE BIT(2)
+
+void goodix_restore_report_rate(struct goodix_ts_core *cd);
+
+bool goodix_is_m2468(struct device_node *node);
 int goodix_get_ic_type(struct device_node *node);
-int gesture_module_init(void);
+int gesture_module_init(struct goodix_ts_core *cd);
 void gesture_module_exit(void);
 int inspect_module_init(void);
 void inspect_module_exit(void);

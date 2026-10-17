@@ -209,18 +209,27 @@ static int brl_reset_after(struct goodix_ts_core *cd)
 #define REG_RESUME_MIN_VOLTAGE 3200000
 #define REG_RESUME_MAX_VOLTAGE 3200000
 
-static int brl_power_on(struct goodix_ts_core *cd, bool on)
+static int brl_power_on_locked(struct goodix_ts_core *cd, bool on)
 {
 	int ret = 0;
 	int iovdd_gpio = cd->board_data.iovdd_gpio;
 	int avdd_gpio = cd->board_data.avdd_gpio;
 	int reset_gpio = cd->board_data.reset_gpio;
+	bool iovdd_enabled = false, avdd_enabled = false;
+	/* Stock M2468 requests <=3.0V; its DT constrains AVDD to >=2.96V. */
+	int avdd_min = cd->is_m2468 ? 2960000 : REG_RESUME_MIN_VOLTAGE;
+	int avdd_max = cd->is_m2468 ? 3000000 : REG_RESUME_MAX_VOLTAGE;
 
 	if (on) {
 		if (iovdd_gpio > 0) {
 			gpio_direction_output(iovdd_gpio, 1);
 		} else if (cd->iovdd) {
 			if (regulator_count_voltages(cd->iovdd) > 0) {
+				if (cd->is_m2468) {
+					ret = regulator_set_voltage(cd->iovdd, 1800000, 1800000);
+					if (ret)
+						goto power_off;
+				}
 				ret = regulator_set_load(cd->iovdd, REG_RESUME_CURRENT);
 				if (ret) {
 					ts_err("Setting regulator load failed:%d", ret);
@@ -232,6 +241,7 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ts_err("Failed to enable iovdd:%d", ret);
 				goto power_off;
 			}
+			iovdd_enabled = true;
 		}
 		usleep_range(3000, 3100);
 		if (avdd_gpio > 0) {
@@ -241,13 +251,12 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ret = regulator_set_load(cd->avdd, REG_RESUME_CURRENT);
 				if (ret) {
 					ts_err("vdd regulator set_load failed ret=%d", ret);
-					return ret;
+					goto power_off;
 				}
-				ret = regulator_set_voltage(cd->avdd, REG_RESUME_MIN_VOLTAGE,
-							REG_RESUME_MAX_VOLTAGE);
+				ret = regulator_set_voltage(cd->avdd, avdd_min, avdd_max);
 				if (ret) {
 					ts_err("vdd regulator set_vtg failed ret=%d", ret);
-					return ret;
+					goto power_off;
 				}
 			}
 			ret = regulator_enable(cd->avdd);
@@ -255,6 +264,7 @@ static int brl_power_on(struct goodix_ts_core *cd, bool on)
 				ts_err("Failed to enable avdd:%d", ret);
 				goto power_off;
 			}
+			avdd_enabled = true;
 		}
 
 		gpio_direction_output(cd->board_data.reset_gpio, 0);
@@ -276,21 +286,43 @@ power_off:
 	gpio_direction_output(reset_gpio, 0);
 	if (iovdd_gpio > 0)
 		gpio_direction_output(iovdd_gpio, 0);
-	else if (cd->iovdd) {
+	else if (cd->iovdd && (!on || iovdd_enabled)) {
 		regulator_disable(cd->iovdd);
 		if (regulator_count_voltages(cd->iovdd) > 0)
 			regulator_set_load(cd->iovdd, REG_SUSPEND_CURRENT);
 	}
 	if (avdd_gpio > 0)
 		gpio_direction_output(avdd_gpio, 0);
-	else if (cd->avdd)
+	else if (cd->avdd && (!on || avdd_enabled))
 		regulator_disable(cd->avdd);
+	return ret;
+}
+
+static void goodix_restore_report_rate_locked(struct goodix_ts_core *cd);
+
+static int brl_power_on(struct goodix_ts_core *cd, bool on)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_power_on_locked(cd, on);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_powered = false;
+	ret = brl_power_on_locked(cd, on);
+	if (!ret && on) {
+		cd->m2468.usb_applied = -1;
+		cd->report_rate_powered = true;
+		goodix_restore_report_rate_locked(cd);
+	}
+	mutex_unlock(&cd->report_rate_lock);
 	return ret;
 }
 
 #define GOODIX_SLEEP_CMD	0x84
 int brl_suspend(struct goodix_ts_core *cd)
 {
+	if (cd->is_m2468)
+		return goodix_m2468_sleep(cd);
 #ifdef GOODIX_SUSPEND_GESTURE_ENABLE
 	struct goodix_ts_cmd sleep_cmd;
 
@@ -308,6 +340,9 @@ int brl_suspend(struct goodix_ts_core *cd)
 int brl_resume(struct goodix_ts_core *cd)
 {
 	int ret = 0;
+
+	if (cd->is_m2468)
+		return cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
 
 #ifdef GOODIX_SUSPEND_GESTURE_ENABLE
 	ret = cd->hw_ops->reset(cd, GOODIX_NORMAL_RESET_DELAY_MS);
@@ -328,6 +363,9 @@ int brl_gesture(struct goodix_ts_core *cd, int gesture_type)
 {
 	struct goodix_ts_cmd cmd;
 
+	if (cd->is_m2468)
+		return goodix_m2468_send_gesture(cd, gesture_type);
+
 	if (cd->bus->ic_type == IC_TYPE_BERLIN_A)
 		cmd.cmd = GOODIX_GESTURE_CMD_BA;
 	else
@@ -340,7 +378,7 @@ int brl_gesture(struct goodix_ts_core *cd, int gesture_type)
 	return 0;
 }
 
-static int brl_reset(struct goodix_ts_core *cd, int delay)
+static int brl_reset_locked(struct goodix_ts_core *cd, int delay)
 {
 	ts_info("chip_reset");
 
@@ -353,6 +391,25 @@ static int brl_reset(struct goodix_ts_core *cd, int delay)
 		msleep(delay);
 
 	return brl_select_spi_mode(cd);
+}
+
+static int brl_reset(struct goodix_ts_core *cd, int delay)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_reset_locked(cd, delay);
+	mutex_lock(&cd->report_rate_lock);
+	cd->report_rate_powered = false;
+	ret = brl_reset_locked(cd, delay);
+	/* Short ISP resets must never receive normal-firmware commands. */
+	if (!ret && delay >= GOODIX_NORMAL_RESET_DELAY_MS) {
+		cd->m2468.usb_applied = -1;
+		cd->report_rate_powered = true;
+		goodix_restore_report_rate_locked(cd);
+	}
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
 }
 
 static int brl_irq_enbale(struct goodix_ts_core *cd, bool enable)
@@ -396,8 +453,8 @@ static int brl_write(struct goodix_ts_core *cd, unsigned int addr,
 #define CMD_ACK_OK               0x80
 
 #define GOODIX_CMD_RETRY 6
-static int brl_send_cmd(struct goodix_ts_core *cd,
-	struct goodix_ts_cmd *cmd)
+static int brl_send_cmd_locked(struct goodix_ts_core *cd,
+			       struct goodix_ts_cmd *cmd)
 {
 	int ret, retry, i;
 	struct goodix_ts_cmd cmd_ack;
@@ -445,6 +502,52 @@ static int brl_send_cmd(struct goodix_ts_core *cd,
 	}
 	ts_err("failed get valid cmd ack");
 	return -EINVAL;
+}
+
+/* Serialize the complete mailbox write/ACK transaction on M2468 MP. */
+static int brl_send_cmd(struct goodix_ts_core *cd, struct goodix_ts_cmd *cmd)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_send_cmd_locked(cd, cmd);
+	mutex_lock(&cd->cmd_lock);
+	ret = brl_send_cmd_locked(cd, cmd);
+	mutex_unlock(&cd->cmd_lock);
+	return ret;
+}
+
+/* Caller holds report_rate_lock, including across complete config sessions. */
+static void goodix_restore_report_rate_locked(struct goodix_ts_core *cd)
+{
+	struct goodix_ts_cmd cmd = { 0 };
+	int ret;
+
+	if (!cd->is_m2468 || !cd->report_rate_ready ||
+	    !cd->report_rate_powered || cd->report_rate_blocked ||
+	    !cd->ic_info.misc.cmd_addr)
+		return;
+
+	/* Stock M2468 MP default, not a numeric Hz selector or game mode. */
+	goodix_m2468_restore_usb_locked(cd);
+	cmd.len = 5;
+	cmd.cmd = 0x9d;
+	cmd.data[0] = 2;
+	ret = cd->hw_ops->send_cmd(cd, &cmd);
+	if (ret)
+		ts_err("M2468 MP default 180Hz command failed: %d", ret);
+	else
+		ts_info("M2468 MP default 180Hz command acknowledged");
+}
+
+/* Keep basic touch available on failure; no additional retry loop. */
+void goodix_restore_report_rate(struct goodix_ts_core *cd)
+{
+	if (!cd->is_m2468)
+		return;
+	mutex_lock(&cd->report_rate_lock);
+	goodix_restore_report_rate_locked(cd);
+	mutex_unlock(&cd->report_rate_lock);
 }
 
 #pragma  pack(1)
@@ -523,7 +626,7 @@ static int send_cfg_cmd(struct goodix_ts_core *cd,
 	return 0;
 }
 
-static int brl_send_config(struct goodix_ts_core *cd, u8 *cfg, int len)
+static int brl_send_config_locked(struct goodix_ts_core *cd, u8 *cfg, int len)
 {
 	int ret;
 	u8 *tmp_buf;
@@ -614,7 +717,23 @@ exit:
 /*
  * return: return config length on succes, other wise return < 0
  **/
-static int brl_read_config(struct goodix_ts_core *cd, u8 *cfg, int size)
+static int brl_send_config(struct goodix_ts_core *cd, u8 *cfg, int len)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_send_config_locked(cd, cfg, len);
+	mutex_lock(&cd->report_rate_lock);
+	ret = brl_send_config_locked(cd, cfg, len);
+	if (!ret) {
+		cd->m2468.usb_applied = -1;
+		goodix_restore_report_rate_locked(cd);
+	}
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
+}
+
+static int brl_read_config_locked(struct goodix_ts_core *cd, u8 *cfg, int size)
 {
 	int ret;
 	struct goodix_ts_cmd cfg_cmd;
@@ -683,6 +802,18 @@ exit:
 	if (ret)
 		return -EINVAL;
 	return cfg_head.cfg_len + sizeof(cfg_head);
+}
+
+static int brl_read_config(struct goodix_ts_core *cd, u8 *cfg, int size)
+{
+	int ret;
+
+	if (!cd->is_m2468)
+		return brl_read_config_locked(cd, cfg, size);
+	mutex_lock(&cd->report_rate_lock);
+	ret = brl_read_config_locked(cd, cfg, size);
+	mutex_unlock(&cd->report_rate_lock);
+	return ret;
 }
 
 /*

@@ -1295,6 +1295,23 @@ int goodix_do_fw_update(struct goodix_ic_config *ic_config, int mode)
 		return -EINVAL;
 	}
 
+	/* M2468 keeps firmware update synchronous with power transitions. */
+	if (fwu_ctrl->core_data->is_m2468) {
+		struct goodix_ts_core *cd = fwu_ctrl->core_data;
+
+		mutex_lock(&cd->m2468.pm_lock);
+		if (atomic_read(&cd->suspended) ||
+		    (READ_ONCE(cd->report_rate_blocked) & GOODIX_RATE_REMOVE)) {
+			mutex_unlock(&cd->m2468.pm_lock);
+			return -EBUSY;
+		}
+		fwu_ctrl->mode = mode | UPDATE_MODE_BLOCK;
+		fwu_ctrl->ic_config = ic_config;
+		ret = goodix_fw_update_thread(fwu_ctrl);
+		mutex_unlock(&cd->m2468.pm_lock);
+		return ret;
+	}
+
 	fwu_ctrl->mode = mode;
 	fwu_ctrl->ic_config = ic_config;
 	ts_debug("fw update mode 0x%x", mode);
