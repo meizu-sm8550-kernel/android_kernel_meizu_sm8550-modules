@@ -385,9 +385,9 @@ static int cam_flash_ops(struct cam_flash_ctrl *flash_ctrl,
 		for (i = 0; i < flash_ctrl->torch_num_sources; i++) {
 			if (flash_ctrl->torch_trigger[i]) {
 				max_current = soc_private->torch_max_current[i];
-				if (flash_data->led_current_ma[i] <=
+				if (flash_data->led_current_ma[0] <=
 					max_current)
-					curr = flash_data->led_current_ma[i];
+					curr = flash_data->led_current_ma[0];
 				else
 					curr = max_current;
 			}
@@ -401,9 +401,9 @@ static int cam_flash_ops(struct cam_flash_ctrl *flash_ctrl,
 		for (i = 0; i < flash_ctrl->flash_num_sources; i++) {
 			if (flash_ctrl->flash_trigger[i]) {
 				max_current = soc_private->flash_max_current[i];
-				if (flash_data->led_current_ma[i] <=
+				if (flash_data->led_current_ma[0] <=
 					max_current)
-					curr = flash_data->led_current_ma[i];
+					curr = flash_data->led_current_ma[0];
 				else
 					curr = max_current;
 			}
