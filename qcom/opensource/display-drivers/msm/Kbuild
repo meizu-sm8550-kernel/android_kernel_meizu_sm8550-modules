@@ -235,7 +235,8 @@ msm_drm-$(CONFIG_DRM_MSM_DSI) += dsi/dsi_phy.o \
 				 dsi/dsi_display.o \
 				 dsi/dsi_panel.o \
 				 dsi/dsi_clk_manager.o \
-				 dsi/dsi_display_test.o
+				 dsi/dsi_display_test.o \
+				 meizu/m2468_display_adfr.o
 
 msm_drm-$(CONFIG_DSI_PARSER) += dsi/dsi_parser.o
 
@@ -249,4 +250,3 @@ msm_drm-$(CONFIG_DRM_MSM) += msm_atomic.o \
 			     msm_gem_vma.o \
 			     msm_smmu.o \
 			     msm_prop.o
-

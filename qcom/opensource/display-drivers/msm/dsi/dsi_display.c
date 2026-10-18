@@ -15,6 +15,7 @@
 #include "msm_mmu.h"
 #include "dsi_display.h"
 #include "dsi_panel.h"
+#include "../meizu/m2468_display_adfr.h"
 #include "dsi_ctrl.h"
 #include "dsi_ctrl_hw.h"
 #include "dsi_drm.h"
@@ -273,6 +274,8 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 
 error:
 	mutex_unlock(&panel->panel_lock);
+	if (!rc)
+		m2468_display_adfr_active();
 	return rc;
 }
 
@@ -1366,6 +1369,8 @@ int dsi_display_set_power(struct drm_connector *connector,
 			rc ? "failed" : "successful");
 	if (!rc)
 		display->panel->power_mode = power_mode;
+	if (!rc && power_mode == SDE_MODE_DPMS_ON)
+		m2468_display_adfr_active();
 
 	return rc;
 }
@@ -5957,6 +5962,10 @@ static int dsi_display_init(struct dsi_display *display)
 					display->panel->name, rc);
 			return rc;
 		}
+		rc = m2468_display_adfr_init(display);
+		if (rc)
+			DSI_WARN("M2468 ADFR init failed, rc=%d\n", rc);
+		rc = 0;
 	}
 
 	rc = component_add(&pdev->dev, &dsi_display_comp_ops);

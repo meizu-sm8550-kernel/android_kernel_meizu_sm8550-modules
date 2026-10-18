@@ -17,6 +17,7 @@
 #include "sde_dbg.h"
 #include "sde_dsc_helper.h"
 #include "sde_vdc_helper.h"
+#include "../meizu/m2468_display_adfr.h"
 
 /**
  * topology is currently defined by a set of following 3 values:
@@ -476,6 +477,16 @@ error:
 	return rc;
 }
 
+int dsi_panel_m2468_tx_cmd_set(struct dsi_panel *panel,
+			       enum dsi_cmd_set_type type)
+{
+	if (type < DSI_CMD_SET_M2468_ADFR_ON ||
+	    type > DSI_CMD_SET_M2468_AOD_LOW)
+		return -EINVAL;
+
+	return dsi_panel_tx_cmd_set(panel, type);
+}
+
 static int dsi_panel_pinctrl_deinit(struct dsi_panel *panel)
 {
 	int rc = 0;
@@ -561,6 +572,7 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 	}
 
 	dsi = &panel->mipi_device;
+	m2468_display_adfr_before_backlight(panel);
 	if (unlikely(panel->bl_config.lp_mode)) {
 		mode_flags = dsi->mode_flags;
 		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
@@ -575,6 +587,7 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 
 	if (unlikely(panel->bl_config.lp_mode))
 		dsi->mode_flags = mode_flags;
+	m2468_display_adfr_after_backlight(panel);
 
 	return rc;
 }
@@ -1877,6 +1890,10 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+	"qcom,mdss-dsi-adfr-on-command",
+	"qcom,mdss-dsi-adfr-off-command",
+	"qcom,mdss-dsi-aod-high-mode-command",
+	"qcom,mdss-dsi-aod-low-mode-command",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1905,6 +1922,10 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+	"qcom,mdss-dsi-adfr-on-command-state",
+	"qcom,mdss-dsi-adfr-off-command-state",
+	"qcom,mdss-dsi-aod-high-mode-command-state",
+	"qcom,mdss-dsi-aod-low-mode-command-state",
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -4421,6 +4442,8 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
+	else
+		m2468_display_adfr_aod_enter(panel);
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4443,6 +4466,8 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
+	else
+		m2468_display_adfr_aod_enter(panel);
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4767,6 +4792,7 @@ int dsi_panel_switch(struct dsi_panel *panel)
 		       panel->name, rc);
 
 	mutex_unlock(&panel->panel_lock);
+	m2468_display_adfr_mode_switch(panel);
 	return rc;
 }
 
@@ -4915,6 +4941,7 @@ int dsi_panel_disable(struct dsi_panel *panel)
 	}
 	panel->panel_initialized = false;
 	panel->power_mode = SDE_MODE_DPMS_OFF;
+	m2468_display_adfr_panel_disable();
 
 	mutex_unlock(&panel->panel_lock);
 	return rc;
