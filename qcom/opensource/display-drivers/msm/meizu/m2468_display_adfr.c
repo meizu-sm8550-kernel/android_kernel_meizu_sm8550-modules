@@ -15,6 +15,8 @@
 #include "../dsi/dsi_display.h"
 #include "../dsi/dsi_panel.h"
 #include "m2468_display_adfr.h"
+#include "m2468_display_brightness.h"
+#include "m2468_display_hbm.h"
 
 #define M2468_ADFR_PANEL_NAME "ILI7838E_TIANMA_MEIZU"
 #define M2468_ADFR_IDLE_DELAY_NS (1500 * NSEC_PER_MSEC)
@@ -42,6 +44,8 @@ struct m2468_display_adfr_state {
 	atomic_t min_fps;
 	atomic_t last_min_fps;
 	atomic_t hbm_saved_min_fps;
+	atomic_t fp_saved_min_fps;
+	atomic_t hbm_suspended;
 	atomic_t last_refresh_rate;
 	atomic_t backlight_type;
 	atomic_t timer_active;
@@ -58,6 +62,7 @@ struct m2468_display_adfr_state {
 	int dynamic_te_gpio;
 	int dynamic_te_irq;
 	u32 normal_bl_max;
+	u32 pending_backlight_type;
 	bool dynamic_te_irq_registered;
 	bool dynamic_te_irq_enabled;
 	bool initialized;
@@ -70,7 +75,6 @@ static struct m2468_display_adfr_state m2468_adfr = {
 	.dynamic_te_irq = -EINVAL,
 };
 static char m2468_star_brightness[128] = "0 0.0";
-static bool m2468_synclights_enable = true;
 
 static bool m2468_adfr_panel_supported(const struct dsi_panel *panel)
 {
@@ -149,6 +153,8 @@ static int m2468_adfr_send_min_fps_locked(struct dsi_panel *panel,
 		return -EINVAL;
 	if (!m2468_adfr_min_fps_valid(min_fps))
 		return -EINVAL;
+	if (min_fps && atomic_read(&m2468_adfr.hbm_suspended))
+		return -EBUSY;
 
 	if (!min_fps) {
 		rc = dsi_panel_m2468_tx_cmd_set(panel,
@@ -246,50 +252,114 @@ void m2468_display_adfr_panel_disable(void)
 	atomic_set(&m2468_adfr.min_fps, 0);
 	atomic_set(&m2468_adfr.aod_light_mode, 2);
 	atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
+	atomic_set(&m2468_adfr.fp_saved_min_fps, 0);
+	atomic_set(&m2468_adfr.hbm_suspended, 0);
+	atomic_set(&m2468_adfr.backlight_type, 0);
+}
+
+bool m2468_display_adfr_full_aod(void)
+{
+	return atomic_read(&m2468_adfr.full_aod_enable);
+}
+
+void m2468_display_adfr_aod_exit(struct dsi_panel *panel)
+{
+	if (m2468_adfr_panel_supported(panel))
+		atomic_set(&m2468_adfr.aod_light_mode, 2);
+}
+
+int m2468_display_adfr_hbm_locked(struct dsi_panel *panel, bool enable)
+{
+	u32 min_fps;
+	int rc;
+
+	if (!atomic_read(&m2468_adfr.supported) ||
+	    !m2468_adfr_panel_supported(panel))
+		return 0;
+	if (enable) {
+		if (atomic_read(&m2468_adfr.hbm_suspended))
+			return 0;
+		min_fps = atomic_read(&m2468_adfr.min_fps);
+		if (min_fps) {
+			rc = m2468_adfr_send_min_fps_locked(panel, 0);
+			if (rc)
+				return rc;
+		}
+		if (!min_fps)
+			min_fps = atomic_read(&m2468_adfr.hbm_saved_min_fps);
+		atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
+		atomic_set(&m2468_adfr.fp_saved_min_fps, min_fps);
+		atomic_set(&m2468_adfr.hbm_suspended, 1);
+		atomic_set(&m2468_adfr.timer_active, 0);
+		hrtimer_cancel(&m2468_adfr.drop_timer);
+		return 0;
+	}
+	atomic_set(&m2468_adfr.hbm_suspended, 0);
+	min_fps = atomic_read(&m2468_adfr.fp_saved_min_fps);
+	if (min_fps && panel->power_mode == SDE_MODE_DPMS_ON &&
+	    !panel->m2468_bl.aod_active && panel->cur_mode &&
+	    panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_M2468_ADFR_ON].count) {
+		rc = m2468_adfr_send_min_fps_locked(panel, min_fps);
+		if (rc)
+			return rc;
+	}
+	atomic_set(&m2468_adfr.fp_saved_min_fps, 0);
+	return 0;
 }
 
 static u32 m2468_adfr_normal_bl_max(struct dsi_panel *panel)
 {
 	u32 level = READ_ONCE(m2468_adfr.normal_bl_max);
 
+	if (panel->m2468_bl.supported && panel->m2468_bl.normal_max)
+		return panel->m2468_bl.normal_max;
 	if (!level && panel)
 		of_property_read_u32(panel->panel_of_node,
 				     "qcom,mdss-brightness-normal-max-level", &level);
 	return level ? level : panel->bl_config.bl_max_level;
 }
 
-void m2468_display_adfr_before_backlight(struct dsi_panel *panel)
+int m2468_display_adfr_before_backlight(struct dsi_panel *panel, u32 level)
 {
 	u32 threshold;
-	u32 backlight;
 	u32 type;
 	int min_fps;
+	int rc;
 
 	if (!atomic_read(&m2468_adfr.supported) ||
 	    !m2468_adfr_panel_supported(panel))
-		return;
+		return 0;
+	if (atomic_read(&m2468_adfr.hbm_suspended))
+		return 0;
+	min_fps = atomic_read(&m2468_adfr.hbm_saved_min_fps);
+	if (min_fps) {
+		rc = m2468_adfr_send_min_fps_locked(panel, min_fps);
+		if (rc)
+			return rc;
+		atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
+	}
 
 	threshold = m2468_adfr_normal_bl_max(panel);
-	backlight = panel->bl_config.bl_level;
+	m2468_adfr.pending_backlight_type = threshold && level > threshold;
 	type = atomic_read(&m2468_adfr.backlight_type);
-	if (!threshold ||
-	    !((backlight > threshold && !type) ||
-	      (backlight <= threshold && type)))
-		return;
+	if (!threshold || m2468_adfr.pending_backlight_type == type)
+		return 0;
 
 	min_fps = atomic_read(&m2468_adfr.min_fps);
+	rc = m2468_adfr_send_min_fps_locked(panel, 0);
+	if (rc)
+		return rc;
 	atomic_set(&m2468_adfr.hbm_saved_min_fps, min_fps);
-	m2468_adfr_send_min_fps_locked(panel, 0);
+	return 0;
 }
 
-void m2468_display_adfr_after_backlight(struct dsi_panel *panel)
+void m2468_display_adfr_after_backlight(struct dsi_panel *panel, bool success)
 {
-	u32 threshold;
-	u32 backlight;
 	u32 last_min_fps;
 
 	if (!atomic_read(&m2468_adfr.supported) ||
-	    !m2468_adfr_panel_supported(panel))
+	    !m2468_adfr_panel_supported(panel) ||
+	    atomic_read(&m2468_adfr.hbm_suspended))
 		return;
 
 	last_min_fps = atomic_read(&m2468_adfr.hbm_saved_min_fps);
@@ -301,10 +371,9 @@ void m2468_display_adfr_after_backlight(struct dsi_panel *panel)
 		atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
 	}
 
-	threshold = m2468_adfr_normal_bl_max(panel);
-	backlight = panel->bl_config.bl_level;
-	atomic_set(&m2468_adfr.backlight_type, threshold &&
-		   backlight > threshold);
+	if (success)
+		atomic_set(&m2468_adfr.backlight_type,
+			   m2468_adfr.pending_backlight_type);
 }
 
 static bool m2468_adfr_regular_refresh_rate(u32 refresh_rate)
@@ -588,6 +657,9 @@ static int m2468_adfr_set_aod_light_mode_locked(struct dsi_panel *panel,
 
 	if (!m2468_adfr_panel_supported(panel) || !dsi_panel_initialized(panel))
 		return -ENODEV;
+	if (!panel->m2468_bl.aod_active &&
+	    (panel->m2468_bl.local_hbm || panel->m2468_bl.global_hbm))
+		return -EBUSY;
 	if (atomic_read(&m2468_adfr.aod_light_mode) == mode)
 		return 0;
 	rc = dsi_panel_m2468_tx_cmd_set(panel, mode ?
@@ -714,7 +786,7 @@ static ssize_t m2468_adfr_synclights_enable_show(struct kobject *kobj,
 						 struct kobj_attribute *attr,
 						 char *buf)
 {
-	return sysfs_emit(buf, "%u\n", READ_ONCE(m2468_synclights_enable));
+	return sysfs_emit(buf, "%u\n", READ_ONCE(synclights_enable));
 }
 
 static ssize_t m2468_adfr_synclights_enable_store(struct kobject *kobj,
@@ -726,7 +798,7 @@ static ssize_t m2468_adfr_synclights_enable_store(struct kobject *kobj,
 
 	if (kstrtouint(buf, 0, &enabled))
 		return -EINVAL;
-	WRITE_ONCE(m2468_synclights_enable, !!enabled);
+	WRITE_ONCE(synclights_enable, !!enabled);
 	return count;
 }
 
@@ -772,6 +844,11 @@ static void m2468_adfr_release(void *data)
 		mutex_unlock(&m2468_adfr_lifecycle_lock);
 		return;
 	}
+	if (m2468_adfr.kobj) {
+		m2468_display_hbm_deinit(m2468_adfr.kobj);
+		sysfs_remove_group(m2468_adfr.kobj, &m2468_adfr_attr_group);
+	}
+	atomic_set(&m2468_adfr.supported, 0);
 	atomic_set(&m2468_adfr.timer_active, 0);
 	if (m2468_adfr.dynamic_te_irq_enabled)
 		disable_irq(m2468_adfr.dynamic_te_irq);
@@ -782,10 +859,8 @@ static void m2468_adfr_release(void *data)
 	kthread_flush_worker(&m2468_adfr.worker);
 	if (m2468_adfr.worker_task)
 		kthread_stop(m2468_adfr.worker_task);
-	if (m2468_adfr.kobj) {
-		sysfs_remove_group(m2468_adfr.kobj, &m2468_adfr_attr_group);
+	if (m2468_adfr.kobj)
 		kobject_put(m2468_adfr.kobj);
-	}
 	m2468_adfr.display = NULL;
 	m2468_adfr.kobj = NULL;
 	m2468_adfr.worker_task = NULL;
@@ -794,6 +869,13 @@ static void m2468_adfr_release(void *data)
 	m2468_adfr.initialized = false;
 	atomic_set(&m2468_adfr.supported, 0);
 	mutex_unlock(&m2468_adfr_lifecycle_lock);
+}
+
+void m2468_display_adfr_deinit(struct dsi_display *display)
+{
+	if (READ_ONCE(m2468_adfr.initialized) &&
+	    READ_ONCE(m2468_adfr.display) == display)
+		devm_release_action(&display->pdev->dev, m2468_adfr_release, display);
 }
 
 int m2468_display_adfr_init(struct dsi_display *display)
@@ -825,6 +907,8 @@ int m2468_display_adfr_init(struct dsi_display *display)
 	atomic_set(&m2468_adfr.min_fps, 0);
 	atomic_set(&m2468_adfr.last_min_fps, 32);
 	atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
+	atomic_set(&m2468_adfr.fp_saved_min_fps, 0);
+	atomic_set(&m2468_adfr.hbm_suspended, 0);
 	atomic_set(&m2468_adfr.last_refresh_rate, 120);
 	atomic_set(&m2468_adfr.dynamic_te_read_rate, 120);
 	atomic_set(&m2468_adfr.aod_light_mode, 2);
@@ -856,6 +940,11 @@ int m2468_display_adfr_init(struct dsi_display *display)
 	rc = sysfs_create_group(m2468_adfr.kobj, &m2468_adfr_attr_group);
 	if (rc)
 		goto fail_kobject;
+	rc = m2468_display_hbm_init(display, m2468_adfr.kobj);
+	if (rc) {
+		sysfs_remove_group(m2468_adfr.kobj, &m2468_adfr_attr_group);
+		goto fail_kobject;
+	}
 
 	m2468_adfr.dynamic_te_gpio =
 		of_get_named_gpio(panel->panel_of_node,

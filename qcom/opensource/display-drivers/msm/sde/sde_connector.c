@@ -19,6 +19,8 @@
 #include "sde_crtc.h"
 #include "sde_rm.h"
 #include "sde_vm.h"
+#include "../meizu/m2468_display_brightness.h"
+#include "../meizu/m2468_display_hbm.h"
 #include <drm/drm_probe_helper.h>
 #include <linux/version.h>
 
@@ -931,6 +933,8 @@ static int _sde_connector_update_dirty_properties(
 {
 	struct sde_connector *c_conn;
 	struct sde_connector_state *c_state;
+	u32 brightness = 0;
+	bool brightness_dirty = false;
 	int idx;
 
 	if (!connector) {
@@ -955,12 +959,26 @@ static int _sde_connector_update_dirty_properties(
 		case CONNECTOR_PROP_HDR_METADATA:
 			_sde_connector_update_hdr_metadata(c_conn, c_state);
 			break;
+		case CONNECTOR_PROP_BRIGHTNESS:
+			brightness = sde_connector_get_property(connector->state,
+						CONNECTOR_PROP_BRIGHTNESS);
+			brightness_dirty = true;
+			break;
+		case CONNECTOR_PROP_SYNC_BL:
+			WRITE_ONCE(c_conn->bl_need_sync, true);
+			break;
 		default:
 			/* nothing to do for most properties */
 			break;
 		}
 	}
 	mutex_unlock(&c_conn->property_info.property_lock);
+	if (brightness_dirty) {
+		int rc = m2468_display_set_brightness(c_conn->bl_device, brightness);
+
+		if (rc)
+			return rc;
+	}
 
 	/* if colorspace needs to be updated do it first */
 	if (c_conn->colorspace_updated) {
@@ -3193,6 +3211,14 @@ static int _sde_connector_install_properties(struct drm_device *dev,
 
 		msm_property_install_enum(&c_conn->property_info, "dsc_mode", 0,
 			0, e_dsc_mode, ARRAY_SIZE(e_dsc_mode), 0, CONNECTOR_PROP_DSC_MODE);
+		if (dsi_display && m2468_display_panel_supported(dsi_display->panel)) {
+			u32 max_level = dsi_display->panel->bl_config.brightness_max_level;
+
+			msm_property_install_range(&c_conn->property_info, "brightness",
+				0, 0, max_level, 0, CONNECTOR_PROP_BRIGHTNESS);
+			msm_property_install_volatile_range(&c_conn->property_info,
+				"sync_bl", 0, 0, max_level, 0, CONNECTOR_PROP_SYNC_BL);
+		}
 
 		if (dsi_display && dsi_display->panel &&
 			display_info->capabilities & MSM_DISPLAY_CAP_CMD_MODE &&

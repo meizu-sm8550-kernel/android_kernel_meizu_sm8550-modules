@@ -6112,8 +6112,10 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 
 	return 0;
 end:
-	if (display)
+	if (display) {
+		m2468_display_adfr_deinit(display);
 		devm_kfree(&pdev->dev, display);
+	}
 
 	return rc;
 }
@@ -6134,6 +6136,7 @@ int dsi_display_dev_remove(struct platform_device *pdev)
 		DSI_ERR("invalid display\n");
 		return -EINVAL;
 	}
+	m2468_display_adfr_deinit(display);
 
 	/* decrement ref count */
 	of_node_put(display->panel_node);

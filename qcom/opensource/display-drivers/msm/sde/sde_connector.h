@@ -633,6 +633,7 @@ struct sde_connector {
 	int rx_len;
 
 	struct edid *cached_edid;
+	bool bl_need_sync;
 	bool misr_event_notify_enabled;
 	struct sde_misr_sign previous_misr_sign;
 

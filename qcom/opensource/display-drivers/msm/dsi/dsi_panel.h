@@ -22,6 +22,7 @@
 #include "dsi_pwr.h"
 #include "dsi_parser.h"
 #include "msm_drv.h"
+#include "../meizu/m2468_display_hbm.h"
 
 #define MAX_BL_LEVEL 4096
 #define MAX_BL_SCALE_LEVEL 1024
@@ -274,6 +275,7 @@ struct dsi_panel {
 	enum dsi_panel_physical_type panel_type;
 
 	struct dsi_panel_ops panel_ops;
+	struct m2468_panel_backlight m2468_bl;
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)

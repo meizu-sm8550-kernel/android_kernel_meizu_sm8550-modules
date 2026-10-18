@@ -10,6 +10,7 @@
 #include "sde_core_irq.h"
 #include "sde_formats.h"
 #include "sde_trace.h"
+#include "../meizu/m2468_display_hbm.h"
 
 #define SDE_DEBUG_CMDENC(e, fmt, ...) SDE_DEBUG("enc%d intf%d " fmt, \
 		(e) && (e)->base.parent ? \
@@ -352,6 +353,7 @@ static void sde_encoder_phys_cmd_te_rd_ptr_irq(void *arg, int irq_idx)
 			phys_enc);
 
 	atomic_add_unless(&cmd_enc->pending_vblank_cnt, -1, 0);
+	m2468_display_hbm_te_irq(phys_enc);
 	wake_up_all(&cmd_enc->pending_vblank_wq);
 	SDE_ATRACE_END("rd_ptr_irq");
 }

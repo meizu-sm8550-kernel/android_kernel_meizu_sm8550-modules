@@ -18,6 +18,7 @@
 #include "sde_dsc_helper.h"
 #include "sde_vdc_helper.h"
 #include "../meizu/m2468_display_adfr.h"
+#include "../meizu/m2468_display_brightness.h"
 
 /**
  * topology is currently defined by a set of following 3 values:
@@ -480,8 +481,9 @@ error:
 int dsi_panel_m2468_tx_cmd_set(struct dsi_panel *panel,
 			       enum dsi_cmd_set_type type)
 {
-	if (type < DSI_CMD_SET_M2468_ADFR_ON ||
-	    type > DSI_CMD_SET_M2468_AOD_LOW)
+	if ((type < DSI_CMD_SET_M2468_ADFR_ON || type >= DSI_CMD_SET_MAX) &&
+	    type != DSI_CMD_SET_LP1 && type != DSI_CMD_SET_LP2 &&
+	    type != DSI_CMD_SET_NOLP)
 		return -EINVAL;
 
 	return dsi_panel_tx_cmd_set(panel, type);
@@ -565,6 +567,7 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 	int rc = 0;
 	unsigned long mode_flags = 0;
 	struct mipi_dsi_device *dsi = NULL;
+	u32 level = bl_lvl;
 
 	if (!panel || (bl_lvl > 0xffff)) {
 		DSI_ERR("invalid params\n");
@@ -572,7 +575,19 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 	}
 
 	dsi = &panel->mipi_device;
-	m2468_display_adfr_before_backlight(panel);
+	rc = m2468_display_backlight_prepare(panel, bl_lvl);
+	if (rc)
+		return rc > 0 ? 0 : rc;
+	rc = m2468_display_adfr_before_backlight(panel, bl_lvl);
+	if (rc)
+		return rc;
+	if (panel->m2468_bl.supported) {
+		rc = m2468_display_update_pwm_dc(panel, bl_lvl);
+		if (rc) {
+			m2468_display_adfr_after_backlight(panel, false);
+			return rc;
+		}
+	}
 	if (unlikely(panel->bl_config.lp_mode)) {
 		mode_flags = dsi->mode_flags;
 		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
@@ -587,7 +602,9 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 
 	if (unlikely(panel->bl_config.lp_mode))
 		dsi->mode_flags = mode_flags;
-	m2468_display_adfr_after_backlight(panel);
+	if (rc >= 0)
+		m2468_display_backlight_done(panel, level);
+	m2468_display_adfr_after_backlight(panel, rc >= 0);
 
 	return rc;
 }
@@ -1894,6 +1911,25 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-adfr-off-command",
 	"qcom,mdss-dsi-aod-high-mode-command",
 	"qcom,mdss-dsi-aod-low-mode-command",
+	"qcom,mdss-dsi-set-hbm-on-commands",
+	"qcom,mdss-dsi-set-1-2-hbm-on-commands",
+	"qcom,mdss-dsi-set-3-4-hbm-on-commands",
+	"qcom,mdss-dsi-set-brightness-off-commands",
+	"qcom,mdss-dsi-set-hbm-off-commands",
+	"qcom,mdss-dsi-set-500-nit-commands",
+	"qcom,mdss-dsi-global-hbm-enter-command",
+	"qcom,mdss-dsi-global-hbm-exit-command",
+	"qcom,mdss-dsi-aod-hbm-command",
+	"qcom,mdss-dsi-hbm-aod-command",
+	"qcom,mdss-dsi-pwm-dc-mode-command",
+	"qcom,mdss-dsi-dc-pwm-mode-command",
+	"qcom,mdss-dsi-set-local-hbm-on-commands",
+	"qcom,mdss-dsi-set-green-local-hbm-on-commands",
+	"qcom,mdss-dsi-set-local-hbm-off-commands",
+	"qcom,mdss-dsi-demura-offset-dc-command",
+	"qcom,mdss-dsi-demura-offset-pwm-1-command",
+	"qcom,mdss-dsi-demura-offset-pwm-2-command",
+	"qcom,mdss-dsi-set-local-hbm-lv-commands",
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1926,6 +1962,25 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-adfr-off-command-state",
 	"qcom,mdss-dsi-aod-high-mode-command-state",
 	"qcom,mdss-dsi-aod-low-mode-command-state",
+	"qcom,mdss-dsi-set-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-1-2-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-3-4-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-brightness-off-commands-state",
+	"qcom,mdss-dsi-set-hbm-off-commands-state",
+	"qcom,mdss-dsi-set-500-nit-commands-state",
+	"qcom,mdss-dsi-global-hbm-enter-command-state",
+	"qcom,mdss-dsi-global-hbm-exit-command-state",
+	"qcom,mdss-dsi-aod-hbm-command-state",
+	"qcom,mdss-dsi-hbm-aod-command-state",
+	"qcom,mdss-dsi-pwm-dc-mode-command-state",
+	"qcom,mdss-dsi-dc-pwm-mode-command-state",
+	"qcom,mdss-dsi-set-local-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-green-local-hbm-on-commands-state",
+	"qcom,mdss-dsi-set-local-hbm-off-commands-state",
+	"qcom,mdss-dsi-demura-offset-dc-command-state",
+	"qcom,mdss-dsi-demura-offset-pwm-1-command-state",
+	"qcom,mdss-dsi-demura-offset-pwm-2-command-state",
+	"qcom,mdss-dsi-set-local-hbm-lv-commands-state",
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -4287,6 +4342,8 @@ int dsi_panel_get_mode(struct dsi_panel *panel,
 		rc = dsi_panel_parse_partial_update_caps(mode, utils);
 		if (rc)
 			DSI_ERR("failed to partial update caps, rc=%d\n", rc);
+		if (!rc)
+			rc = m2468_display_parse_vsync(mode);
 	}
 
 parse_fail:
@@ -4438,6 +4495,11 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 		panel->power_mode != SDE_MODE_DPMS_LP2)
 		dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 			"ibb", REGULATOR_MODE_IDLE);
+	rc = m2468_display_hbm_aod_enter(panel);
+	if (rc) {
+		rc = rc > 0 ? 0 : rc;
+		goto exit;
+	}
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP1);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
@@ -4462,6 +4524,11 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	if (!panel->panel_initialized)
 		goto exit;
 
+	rc = m2468_display_hbm_aod_enter(panel);
+	if (rc) {
+		rc = rc > 0 ? 0 : rc;
+		goto exit;
+	}
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP2);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
@@ -4494,6 +4561,11 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	     panel->power_mode == SDE_MODE_DPMS_LP2))
 		dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 			"ibb", REGULATOR_MODE_NORMAL);
+	rc = m2468_display_hbm_aod_exit(panel);
+	if (rc) {
+		rc = rc > 0 ? 0 : rc;
+		goto exit;
+	}
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
@@ -4942,6 +5014,7 @@ int dsi_panel_disable(struct dsi_panel *panel)
 	panel->panel_initialized = false;
 	panel->power_mode = SDE_MODE_DPMS_OFF;
 	m2468_display_adfr_panel_disable();
+	m2468_display_hbm_panel_disable(panel);
 
 	mutex_unlock(&panel->panel_lock);
 	return rc;

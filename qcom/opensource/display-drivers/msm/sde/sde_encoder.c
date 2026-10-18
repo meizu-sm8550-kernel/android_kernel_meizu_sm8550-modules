@@ -46,6 +46,7 @@
 #include "sde_vm.h"
 #include "sde_fence.h"
 #include "../meizu/m2468_display_adfr.h"
+#include "../meizu/m2468_display_brightness.h"
 
 #define SDE_DEBUG_ENC(e, fmt, ...) SDE_DEBUG("enc%d " fmt,\
 		(e) ? (e)->base.base.id : -1, ##__VA_ARGS__)
@@ -4871,6 +4872,8 @@ void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool config_changed)
 		_sde_encoder_update_retire_txq(sde_enc->cur_master, sde_kms);
 
 	m2468_display_adfr_handle_idle(false);
+	if (m2468_display_sync_brightness(drm_enc))
+		SDE_DEBUG_ENC(sde_enc, "synchronized backlight update failed\n");
 
 	/* All phys encs are ready to go, trigger the kickoff */
 	_sde_encoder_kickoff_phys(sde_enc, config_changed);
@@ -5790,6 +5793,23 @@ fail:
 		sde_encoder_destroy(drm_enc);
 
 	return ERR_PTR(ret);
+}
+
+int sde_encoder_m2468_wakeup(struct drm_encoder *drm_enc, bool wait_for_vsync)
+{
+	struct sde_encoder_virt *sde_enc;
+	int rc;
+
+	if (!drm_enc || !drm_enc->crtc)
+		return -ENODEV;
+	sde_enc = to_sde_encoder_virt(drm_enc);
+	if (!sde_enc->cur_master ||
+	    sde_enc->cur_master->enable_state != SDE_ENC_ENABLED)
+		return -EBUSY;
+	rc = sde_encoder_resource_control(drm_enc, SDE_ENC_RC_EVENT_EARLY_WAKEUP);
+	if (rc || !wait_for_vsync)
+		return rc;
+	return sde_encoder_wait_for_event(drm_enc, MSM_ENC_VBLANK);
 }
 
 int sde_encoder_wait_for_event(struct drm_encoder *drm_enc,
