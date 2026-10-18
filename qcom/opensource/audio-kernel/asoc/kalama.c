@@ -948,6 +948,30 @@ static struct snd_soc_dai_link msm_rx_tx_cdc_dma_be_dai_links[] = {
 	},
 };
 
+static struct snd_soc_dai_link msm_m2468_tx_dai_links[] = {
+	{
+		.name = LPASS_BE_TX_CDC_DMA_TX_3,
+		.stream_name = LPASS_BE_TX_CDC_DMA_TX_3,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ignore_suspend = 1,
+		.ops = &msm_common_be_ops,
+		SND_SOC_DAILINK_REG(tx_dma_tx3),
+		.init = &msm_rx_tx_codec_init,
+	},
+	{
+		.name = LPASS_BE_TX_CDC_DMA_TX_4,
+		.stream_name = LPASS_BE_TX_CDC_DMA_TX_4,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ignore_suspend = 1,
+		.ops = &msm_common_be_ops,
+		SND_SOC_DAILINK_REG(tx_dma_tx4),
+	},
+};
+
 static struct snd_soc_dai_link msm_va_cdc_dma_be_dai_links[] = {
 	{
 		.name = LPASS_BE_VA_CDC_DMA_TX_0,
@@ -1715,6 +1739,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 	int total_links = 0;
 	int rc = 0;
 	u32 val = 0;
+	u32 m2468_cs35l43 = 0;
 	const struct of_device_id *match;
 
 	match = of_match_node(kalama_asoc_machine_of_match, dev->of_node);
@@ -1729,12 +1754,21 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 		card->codec_conf = meizu_codec_conf;
 		card->num_configs = ARRAY_SIZE(meizu_codec_conf);
 
-		/* late probe uses dai link at index '0' to get wcd component */
-		memcpy(msm_kalama_dai_links + total_links,
-			   msm_rx_tx_cdc_dma_be_dai_links,
-			   sizeof(msm_rx_tx_cdc_dma_be_dai_links));
-		total_links +=
-			ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links);
+		of_property_read_u32(dev->of_node, "qcom,enable_cs35l43",
+				     &m2468_cs35l43);
+		if (m2468_cs35l43) {
+			memcpy(msm_kalama_dai_links + total_links,
+			       msm_m2468_tx_dai_links,
+			       sizeof(msm_m2468_tx_dai_links));
+			total_links += ARRAY_SIZE(msm_m2468_tx_dai_links);
+		} else {
+			/* late probe uses dai link at index 0 for WCD */
+			memcpy(msm_kalama_dai_links + total_links,
+			       msm_rx_tx_cdc_dma_be_dai_links,
+			       sizeof(msm_rx_tx_cdc_dma_be_dai_links));
+			total_links +=
+				ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links);
+		}
 
 		switch (wsa_max_devs) {
 		case MONO_SPEAKER:
