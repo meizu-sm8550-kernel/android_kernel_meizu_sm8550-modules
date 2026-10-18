@@ -101,6 +101,18 @@ struct msm_asoc_mach_data {
 static bool is_initial_boot;
 static bool codec_reg_done;
 static struct snd_soc_card snd_soc_card_kalama_msm;
+
+static struct snd_soc_codec_conf meizu_codec_conf[] = {
+	{
+		.dlc = COMP_CODEC_CONF("cs35l43_spk"),
+		.name_prefix = "SPK",
+	},
+	{
+		.dlc = COMP_CODEC_CONF("cs35l43_rcv"),
+		.name_prefix = "RCV",
+	},
+};
+
 static int dmic_0_1_gpio_cnt;
 static int dmic_2_3_gpio_cnt;
 static int dmic_4_5_gpio_cnt;
@@ -320,6 +332,83 @@ static struct snd_soc_ops msm_common_be_ops = {
 	.hw_params = msm_common_snd_hw_params,
 	.startup = msm_common_snd_startup,
 	.shutdown = msm_common_snd_shutdown,
+};
+
+static int cs35l43_hw_params(struct snd_pcm_substream *substream,
+			     struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai;
+	unsigned int sample_rate;
+	unsigned int mclock;
+	int ret;
+	int i;
+	int wl;
+
+	dev_dbg(rtd->card->dev, "+%s, word_width = %d.\n", __func__,
+		snd_pcm_format_width(params_format(params)));
+
+	ret = msm_common_snd_hw_params(substream, params);
+	if (ret) {
+		dev_err(rtd->card->dev, "%s,platform hw_params fail:%d.\n",
+			__func__, ret);
+		return ret;
+	}
+
+	sample_rate = params_rate(params);
+	switch (params_format(params)) {
+	case SNDRV_PCM_FORMAT_S24_LE:
+	case SNDRV_PCM_FORMAT_S24_3LE:
+	case SNDRV_PCM_FORMAT_S32_LE:
+		wl = 32;
+		break;
+	default:
+		wl = 16;
+		break;
+	}
+
+	mclock = wl * sample_rate * 2;
+	dev_dbg(rtd->card->dev, "%s: wl=%d, mclock=%d,sample_rate=%d.\n",
+		__func__, wl, mclock, sample_rate);
+	dev_dbg(rtd->card->dev, "%s: num_codecs=%d.\n", __func__,
+		rtd->dai_link->num_codecs);
+
+	for_each_rtd_codec_dais(rtd, i, codec_dai) {
+		ret = snd_soc_dai_set_fmt(codec_dai,
+					  SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBC_CFC);
+		if (ret < 0) {
+			dev_err(rtd->card->dev,
+				"%s: Failed to set fmt codec dai: %d.\n",
+				__func__, ret);
+			break;
+		}
+
+		ret = snd_soc_component_set_sysclk(codec_dai->component, 0, 0,
+						   mclock, SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_err(rtd->card->dev,
+				"%s: Failed to set codec sysclk: %d.\n",
+				__func__, ret);
+			break;
+		}
+
+		ret = snd_soc_dai_set_sysclk(codec_dai, 0, mclock,
+					     SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_err(rtd->card->dev,
+				"%s: Failed to set dai sysclk: %d.\n", __func__,
+				ret);
+			break;
+		}
+	}
+
+	return ret;
+}
+
+static const struct snd_soc_ops cs35l43_be_ops = {
+	.startup = msm_common_snd_startup,
+	.shutdown = msm_common_snd_shutdown,
+	.hw_params = cs35l43_hw_params,
 };
 
 static int msm_dmic_event(struct snd_soc_dapm_widget *w,
@@ -1045,6 +1134,34 @@ static struct snd_soc_dai_link iot_vc_dai_links[] = {
 	},
 };
 
+static int cs35l43_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_component *component;
+	struct snd_soc_dapm_context *dapm;
+	const char *component_name;
+	int i;
+
+	for_each_rtd_components(rtd, i, component) {
+		component_name = component->driver->name;
+		if (component_name && !strcmp(component_name, "cs35l43")) {
+			dapm = snd_soc_component_get_dapm(component);
+			snd_soc_dapm_ignore_suspend(dapm, "AMP Playback");
+			snd_soc_dapm_ignore_suspend(dapm, "AMP Capture");
+			snd_soc_dapm_ignore_suspend(dapm, "ASPRX1");
+			snd_soc_dapm_ignore_suspend(dapm, "ASPRX2");
+			snd_soc_dapm_ignore_suspend(dapm, "ASPTX1");
+			snd_soc_dapm_ignore_suspend(dapm, "ASPTX2");
+			snd_soc_dapm_ignore_suspend(dapm, "SPK");
+			snd_soc_dapm_ignore_suspend(dapm, "AP");
+		}
+
+		dev_dbg(rtd->card->dev, "%s:i:%d,component_name:%s\n",
+			__func__, i, component_name);
+	}
+
+	return 0;
+}
+
 /*
  * I2S interface pinctrl mapping
  * ------------------------------------
@@ -1084,10 +1201,11 @@ static struct snd_soc_dai_link msm_mi2s_dai_links[] = {
 		.playback_only = 1,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
 			SND_SOC_DPCM_TRIGGER_POST},
-		.ops = &msm_common_be_ops,
+		.ops = &cs35l43_be_ops,
+		.init = cs35l43_init,
 		.ignore_suspend = 1,
 		.ignore_pmdown_time = 1,
-		SND_SOC_DAILINK_REG(sec_mi2s_rx),
+		SND_SOC_DAILINK_REG(secondary_smartpa_aif),
 	},
 	{
 		.name = LPASS_BE_SEC_MI2S_TX,
@@ -1095,9 +1213,9 @@ static struct snd_soc_dai_link msm_mi2s_dai_links[] = {
 		.capture_only = 1,
 		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
 			SND_SOC_DPCM_TRIGGER_POST},
-		.ops = &msm_common_be_ops,
+		.ops = &cs35l43_be_ops,
 		.ignore_suspend = 1,
-		SND_SOC_DAILINK_REG(sec_mi2s_tx),
+		SND_SOC_DAILINK_REG(secondary_smartpa_aif),
 	},
 	{
 		.name = LPASS_BE_TERT_MI2S_RX,
@@ -1608,6 +1726,8 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 
 	if (!strcmp(match->data, "codec")) {
 		card = &snd_soc_card_kalama_msm;
+		card->codec_conf = meizu_codec_conf;
+		card->num_configs = ARRAY_SIZE(meizu_codec_conf);
 
 		/* late probe uses dai link at index '0' to get wcd component */
 		memcpy(msm_kalama_dai_links + total_links,
