@@ -183,6 +183,11 @@ static SOC_VALUE_ENUM_SINGLE_DECL(cs35l43_dc_wd_mode_enum, CS35L43_ALIVE_DCIN_WD
 			CS35L43_WD_MODE_SHIFT, 0x3,
 			cs35l43_wd_mode_texts, cs35l43_wd_mode_values);
 
+static const char * const cs35l43_delta_texts[] = {
+	"music", "voice", "game", "video", "voip", "handsfree", "handset"
+};
+static SOC_ENUM_SINGLE_EXT_DECL(cs35l43_delta_enum, cs35l43_delta_texts);
+
 static int cs35l43_delta_select_get(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
 {
@@ -192,7 +197,7 @@ static int cs35l43_delta_select_get(struct snd_kcontrol *kcontrol,
 	component = snd_soc_kcontrol_component(kcontrol);
 	cs35l43 = snd_soc_component_get_drvdata(component);
 
-	ucontrol->value.integer.value[0] = cs35l43->delta_applied;
+	ucontrol->value.enumerated.item[0] = cs35l43->delta_applied;
 
 	return 0;
 }
@@ -204,14 +209,15 @@ static int cs35l43_apply_delta_tuning(struct cs35l43_private *cs35l43)
 	const char *fwf_name;
 	char filename[NAME_MAX];
 
-	if (!cs35l43->delta_requested ||
-	     cs35l43->delta_applied == cs35l43->delta_requested)
+	if (cs35l43->delta_applied == cs35l43->delta_requested)
 		return 0;
 
-	dev_dbg(cs35l43->dev, "Applying delta file %d\n", cs35l43->delta_requested);
+	dev_dbg(cs35l43->dev, "Applying delta file %s\n",
+		cs35l43_delta_texts[cs35l43->delta_requested]);
 
 	fwf_name = dsp->fwf_name;
-	snprintf(filename, NAME_MAX, "delta-%d", cs35l43->delta_requested);
+	snprintf(filename, NAME_MAX, "delta-%s",
+		 cs35l43_delta_texts[cs35l43->delta_requested]);
 	dsp->fwf_name = filename;
 
 	ret = wm_adsp_load_coeff(dsp);
@@ -233,15 +239,20 @@ static int cs35l43_delta_select_put(struct snd_kcontrol *kcontrol,
 				 snd_soc_kcontrol_component(kcontrol);
 	struct cs35l43_private *cs35l43 =
 				 snd_soc_component_get_drvdata(component);
+	unsigned int delta = ucontrol->value.enumerated.item[0];
+	int ret = 0;
 
-	cs35l43->delta_requested = ucontrol->value.integer.value[0];
+	if (delta >= ARRAY_SIZE(cs35l43_delta_texts))
+		return -EINVAL;
 
 	mutex_lock(&cs35l43->hb_lock);
-	if (cs35l43->hibernate_state == CS35L43_HIBERNATE_AWAKE)
-		cs35l43_apply_delta_tuning(cs35l43);
+	cs35l43->delta_requested = delta;
+	if (cs35l43->low_pwr_mode == CS35L43_LOW_PWR_MODE_STANDBY ||
+	    cs35l43->hibernate_state == CS35L43_HIBERNATE_AWAKE)
+		ret = cs35l43_apply_delta_tuning(cs35l43);
 	mutex_unlock(&cs35l43->hb_lock);
 
-	return 0;
+	return ret;
 }
 
 static int cs35l43_ultrasonic_mode_get(struct snd_kcontrol *kcontrol,
@@ -427,8 +438,8 @@ static const struct snd_kcontrol_new cs35l43_aud_controls[] = {
 	SOC_SINGLE_RANGE("ASPRX1 Slot Position", CS35L43_ASP_FRAME_CONTROL5, 0, 0, 7, 0),
 	SOC_SINGLE_RANGE("ASPRX2 Slot Position", CS35L43_ASP_FRAME_CONTROL5, 8, 0, 7, 0),
 	SOC_SINGLE_RANGE("ASPRX3 Slot Position", CS35L43_ASP_FRAME_CONTROL5, 16, 0, 7, 0),
-	SOC_SINGLE_EXT("Delta Select", SND_SOC_NOPM, 0, 10, 0,
-			cs35l43_delta_select_get, cs35l43_delta_select_put),
+	SOC_ENUM_EXT("Delta Select", cs35l43_delta_enum,
+		     cs35l43_delta_select_get, cs35l43_delta_select_put),
 	WM_ADSP2_PRELOAD_SWITCH("DSP1", 1),
 	WM_ADSP_FW_CONTROL("DSP1", 0),
 };
@@ -1008,6 +1019,8 @@ static int cs35l43_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 	struct cs35l43_private *cs35l43 =
 		snd_soc_component_get_drvdata(component);
 	unsigned int audio_state;
+	__be32 allow_act_boot = cpu_to_be32(1);
+	int ret;
 
 	dev_dbg(cs35l43->dev, "%s\n", __func__);
 
@@ -1020,6 +1033,11 @@ static int cs35l43_dsp_audio_ev(struct snd_soc_dapm_widget *w,
 		if (!cs35l43->first_event) {
 			regmap_update_bits(cs35l43->regmap, CS35L43_IRQ1_MASK_1,
 				CS35L43_DSP_VIRTUAL2_MBOX_WR_EINT1_MASK, 0);
+			ret = wm_adsp_write_ctl(&cs35l43->dsp, "ALLOW_ACT_BOOT",
+				WMFW_ADSP2_XM, 0x5f224, &allow_act_boot,
+				sizeof(allow_act_boot));
+			if (ret)
+				return ret;
 			cs35l43->first_event = true;
 		}
 

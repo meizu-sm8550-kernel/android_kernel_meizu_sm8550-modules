@@ -2580,8 +2580,13 @@ int wm_adsp_load_coeff(struct wm_adsp *dsp)
 	if (file == NULL)
 		return -ENOMEM;
 
-	snprintf(file, PAGE_SIZE, "%s-%s-%s.bin", dsp->part, dsp->fwf_name,
-		 wm_adsp_fw[dsp->fw].file);
+	if (dsp->component->name_prefix)
+		snprintf(file, PAGE_SIZE, "%s-%s-%s-%s.bin",
+			 dsp->component->name_prefix, dsp->part, dsp->fwf_name,
+			 wm_adsp_fw[dsp->fw].file);
+	else
+		snprintf(file, PAGE_SIZE, "%s-%s-%s.bin", dsp->part,
+			 dsp->fwf_name, wm_adsp_fw[dsp->fw].file);
 	file[PAGE_SIZE - 1] = '\0';
 
 	ret = request_firmware(&firmware, file, dsp->dev);
