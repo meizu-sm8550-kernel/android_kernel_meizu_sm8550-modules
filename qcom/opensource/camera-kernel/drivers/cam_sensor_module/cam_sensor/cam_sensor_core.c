@@ -5,6 +5,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/string.h>
 #include <cam_sensor_cmn_header.h>
 #include "cam_sensor_core.h"
 #include "cam_sensor_util.h"
@@ -1022,6 +1023,16 @@ int cam_sensor_match_id(struct cam_sensor_ctrl_t *s_ctrl)
 		s_ctrl->sensor_name, chipid, slave_info->sensor_id);
 
 	if (cam_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
+		/* The M2468 stock driver also accepts GN5 ID 0x08e3 on slot 0. */
+		if (s_ctrl->soc_info.index == 0 && chipid == 0x08e3 &&
+		    slave_info->sensor_id == 0x08e5 &&
+		    !strcmp(s_ctrl->sensor_name, "M2468_rayprus_s5kgn5sp")) {
+			CAM_WARN(CAM_SENSOR,
+				"%s read id: 0x%x != 0x%x workaround",
+				s_ctrl->sensor_name, chipid, slave_info->sensor_id);
+			return rc;
+		}
+
 		CAM_WARN(CAM_SENSOR, "%s read id: 0x%x expected id 0x%x:",
 				s_ctrl->sensor_name, chipid,
 				slave_info->sensor_id);
