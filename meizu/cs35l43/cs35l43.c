@@ -67,6 +67,17 @@ static DECLARE_TLV_DB_SCALE(amp_gain_tlv, 0, 1, 1);
 static const struct snd_kcontrol_new amp_enable_ctrl =
 	SOC_DAPM_SINGLE("Switch", SND_SOC_NOPM, 0, 1, 0);
 
+static const struct snd_kcontrol_new dre_ctrl =
+	SOC_DAPM_SINGLE("Switch", CS35L43_BLOCK_ENABLES2,
+			CS35L43_AMP_DRE_EN_SHIFT, 1, 0);
+
+static const char * const cs35l43_asptx_ref_texts[] = { "None", "Ref" };
+static SOC_ENUM_SINGLE_DECL(cs35l43_asptx_ref_enum, SND_SOC_NOPM, 2,
+			    cs35l43_asptx_ref_texts);
+
+static const struct snd_kcontrol_new asptx_ref_mux =
+	SOC_DAPM_ENUM("Virt Connect", cs35l43_asptx_ref_enum);
+
 static const char * const cs35l43_pcm_sftramp_text[] =  {
 	"Off", ".5ms", "1ms", "2ms", "4ms", "8ms", "15ms", "30ms"};
 
@@ -442,6 +453,7 @@ static const struct snd_kcontrol_new cs35l43_aud_controls[] = {
 		     cs35l43_delta_select_get, cs35l43_delta_select_put),
 	WM_ADSP2_PRELOAD_SWITCH("DSP1", 1),
 	WM_ADSP_FW_CONTROL("DSP1", 0),
+	SOC_SINGLE("Noise Gate", CS35L43_NG_CONFIG, 0, 0x3FFF, 0),
 };
 
 static int cs35l43_dsp_preload_ev(struct snd_soc_dapm_widget *w,
@@ -1619,6 +1631,7 @@ static const struct snd_soc_dapm_widget cs35l43_dapm_widgets[] = {
 	SND_SOC_DAPM_AIF_OUT("ASPTX4", NULL, 0, CS35L43_ASP_ENABLES1,
 					CS35L43_ASP_TX4_EN_SHIFT, 0),
 
+	SND_SOC_DAPM_MUX("ASPTX Ref", SND_SOC_NOPM, 0, 0, &asptx_ref_mux),
 	SND_SOC_DAPM_MUX("ASP TX1 Source", SND_SOC_NOPM, 0, 0, &asp_tx1_mux),
 	SND_SOC_DAPM_MUX("ASP TX2 Source", SND_SOC_NOPM, 0, 0, &asp_tx2_mux),
 	SND_SOC_DAPM_MUX("ASP TX3 Source", SND_SOC_NOPM, 0, 0, &asp_tx3_mux),
@@ -1641,6 +1654,7 @@ static const struct snd_soc_dapm_widget cs35l43_dapm_widgets[] = {
 	SND_SOC_DAPM_ADC("TEMPMON ADC", NULL, CS35L43_BLOCK_ENABLES,
 					CS35L43_TEMPMON_EN_SHIFT, 0),
 	SND_SOC_DAPM_SWITCH("AMP Enable", SND_SOC_NOPM, 0, 1, &amp_enable_ctrl),
+	SND_SOC_DAPM_SWITCH("DRE", SND_SOC_NOPM, 0, 0, &dre_ctrl),
 };
 
 static const struct snd_soc_dapm_route cs35l43_audio_map[] = {
@@ -1667,6 +1681,9 @@ static const struct snd_soc_dapm_route cs35l43_audio_map[] = {
 	{"Main AMP", NULL, "PCM Source"},
 	{"SPK", NULL, "Main AMP"},
 	{"SPK", NULL, "Hibernate"},
+
+	{ "VMON ADC", NULL, "DRE" },
+	{ "DRE", "Switch", "SPK" },
 
 	{"ASP TX1 Source", "ASPRX1", "ASPRX1"},
 	{"ASP TX2 Source", "ASPRX1", "ASPRX1"},
@@ -1740,6 +1757,12 @@ static const struct snd_soc_dapm_route cs35l43_audio_map[] = {
 	{"AMP Capture", NULL, "ASPTX2"},
 	{"AMP Capture", NULL, "ASPTX3"},
 	{"AMP Capture", NULL, "ASPTX4"},
+
+	{ "ASPTX Ref", "Ref", "ASPTX1" },
+	{ "ASPTX Ref", "Ref", "ASPTX2" },
+	{ "ASPTX Ref", "Ref", "ASPTX3" },
+	{ "ASPTX Ref", "Ref", "ASPTX4" },
+	{ "Main AMP", NULL, "ASPTX Ref" },
 
 	{"DSP1", NULL, "IMON ADC"},
 	{"DSP1", NULL, "VMON ADC"},
