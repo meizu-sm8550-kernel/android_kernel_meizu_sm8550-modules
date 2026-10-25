@@ -46,7 +46,6 @@ struct m2468_display_adfr_state {
 	atomic_t hbm_saved_min_fps;
 	atomic_t fp_saved_min_fps;
 	atomic_t hbm_suspended;
-	atomic_t last_refresh_rate;
 	atomic_t backlight_type;
 	atomic_t timer_active;
 	atomic_t exit_idle_count;
@@ -382,24 +381,24 @@ static bool m2468_adfr_regular_refresh_rate(u32 refresh_rate)
 		refresh_rate == 120;
 }
 
+void m2468_display_adfr_reset_min_fps(struct dsi_panel *panel)
+{
+	if (atomic_read(&m2468_adfr.supported) &&
+	    m2468_adfr_panel_supported(panel))
+		atomic_set(&m2468_adfr.min_fps, 0);
+}
+
 void m2468_display_adfr_mode_switch(struct dsi_panel *panel)
 {
-	u32 last_refresh_rate;
-	u32 refresh_rate;
-
 	if (!atomic_read(&m2468_adfr.supported) ||
-	    !m2468_adfr_panel_supported(panel) || !panel->cur_mode)
+	    !m2468_adfr_panel_supported(panel) || !panel->cur_mode ||
+	    panel->power_mode != SDE_MODE_DPMS_ON ||
+	    panel->m2468_bl.aod_active)
 		return;
 
-	refresh_rate = panel->cur_mode->timing.refresh_rate;
-	last_refresh_rate = atomic_read(&m2468_adfr.last_refresh_rate);
-	if (m2468_adfr_regular_refresh_rate(refresh_rate) &&
-	    last_refresh_rate == 90)
-		m2468_adfr_update_min_fps(32);
-	else if (refresh_rate == 90 &&
-		 m2468_adfr_regular_refresh_rate(last_refresh_rate))
-		m2468_adfr_update_min_fps(0);
-	atomic_set(&m2468_adfr.last_refresh_rate, refresh_rate);
+	/* The mode-switch caller already holds the display and panel locks. */
+	if (m2468_adfr_regular_refresh_rate(panel->cur_mode->timing.refresh_rate))
+		m2468_adfr_send_min_fps_locked(panel, 32);
 }
 
 static void m2468_adfr_drop_work(struct kthread_work *work)
@@ -419,6 +418,7 @@ void m2468_display_adfr_handle_idle(bool enter_idle)
 {
 	struct dsi_display *display = READ_ONCE(m2468_adfr.display);
 	struct dsi_panel *panel;
+	bool dynamic_te;
 	int exit_count;
 
 	if (!atomic_read(&m2468_adfr.supported) || !display || !display->panel)
@@ -430,25 +430,35 @@ void m2468_display_adfr_handle_idle(bool enter_idle)
 	    !dsi_panel_initialized(panel) || !atomic_read(&m2468_adfr.min_fps))
 		return;
 
+	dynamic_te = atomic_read(&m2468_adfr.dynamic_te_enabled);
 	if (enter_idle) {
 		exit_count = atomic_read(&m2468_adfr.exit_idle_count);
-		if (!atomic_read(&m2468_adfr.dynamic_te_enabled) &&
-		    atomic_read(&m2468_adfr.min_fps) != 32)
-			m2468_adfr_update_min_fps(32);
-		if (exit_count >= 2 &&
-		    !atomic_xchg(&m2468_adfr.timer_active, 1))
-			hrtimer_start(&m2468_adfr.drop_timer,
-				      ns_to_ktime(M2468_ADFR_IDLE_DELAY_NS),
-				      HRTIMER_MODE_REL);
+		if (exit_count >= 2 || (exit_count && !dynamic_te &&
+				       m2468_display_adfr_full_aod())) {
+			if (!dynamic_te && atomic_read(&m2468_adfr.min_fps) != 32)
+				m2468_adfr_update_min_fps(32);
+			if (!atomic_xchg(&m2468_adfr.timer_active, 1))
+				hrtimer_start(&m2468_adfr.drop_timer,
+					      ns_to_ktime(M2468_ADFR_IDLE_DELAY_NS),
+					      HRTIMER_MODE_REL);
+		}
 		atomic_set(&m2468_adfr.exit_idle_count, 0);
 		return;
 	}
 
-	atomic_inc(&m2468_adfr.exit_idle_count);
-	if (atomic_xchg(&m2468_adfr.timer_active, 0))
+	if (dynamic_te && atomic_inc_return(&m2468_adfr.exit_idle_count) < 2)
+		return;
+	if (atomic_xchg(&m2468_adfr.timer_active, 0)) {
 		hrtimer_cancel(&m2468_adfr.drop_timer);
-	if (atomic_read(&m2468_adfr.min_fps) != 32)
-		m2468_adfr_update_min_fps(32);
+		if (dynamic_te && atomic_read(&m2468_adfr.exit_idle_count) < 2)
+			return;
+	}
+	if (dynamic_te) {
+		if (atomic_read(&m2468_adfr.min_fps) != 32)
+			m2468_adfr_update_min_fps(32);
+	} else {
+		atomic_inc(&m2468_adfr.exit_idle_count);
+	}
 }
 
 static u32 m2468_adfr_filter_dynamic_te(struct m2468_dynamic_te_filter *filter,
@@ -909,7 +919,6 @@ int m2468_display_adfr_init(struct dsi_display *display)
 	atomic_set(&m2468_adfr.hbm_saved_min_fps, 0);
 	atomic_set(&m2468_adfr.fp_saved_min_fps, 0);
 	atomic_set(&m2468_adfr.hbm_suspended, 0);
-	atomic_set(&m2468_adfr.last_refresh_rate, 120);
 	atomic_set(&m2468_adfr.dynamic_te_read_rate, 120);
 	atomic_set(&m2468_adfr.aod_light_mode, 2);
 	atomic_set(&m2468_adfr.aod_presets_light_mode, 2);

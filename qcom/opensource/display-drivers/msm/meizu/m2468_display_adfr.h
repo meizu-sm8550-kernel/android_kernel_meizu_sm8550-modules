@@ -17,6 +17,7 @@ void m2468_display_adfr_after_backlight(struct dsi_panel *panel, bool success);
 int m2468_display_adfr_hbm_locked(struct dsi_panel *panel, bool enable);
 bool m2468_display_adfr_full_aod(void);
 void m2468_display_adfr_aod_exit(struct dsi_panel *panel);
+void m2468_display_adfr_reset_min_fps(struct dsi_panel *panel);
 void m2468_display_adfr_mode_switch(struct dsi_panel *panel);
 void m2468_display_adfr_aod_enter(struct dsi_panel *panel);
 void m2468_display_adfr_panel_disable(void);
@@ -38,6 +39,10 @@ static inline int m2468_display_adfr_before_backlight(struct dsi_panel *panel,
 }
 static inline void m2468_display_adfr_after_backlight(struct dsi_panel *panel,
 						      bool success)
+{
+	(void)panel;
+}
+static inline void m2468_display_adfr_reset_min_fps(struct dsi_panel *panel)
 {
 	(void)panel;
 }

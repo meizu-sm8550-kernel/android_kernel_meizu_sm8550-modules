@@ -4858,13 +4858,15 @@ int dsi_panel_switch(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+	m2468_display_adfr_reset_min_fps(panel);
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmds, rc=%d\n",
 		       panel->name, rc);
+	else
+		m2468_display_adfr_mode_switch(panel);
 
 	mutex_unlock(&panel->panel_lock);
-	m2468_display_adfr_mode_switch(panel);
 	return rc;
 }
 
