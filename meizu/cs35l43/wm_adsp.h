@@ -112,6 +112,7 @@ struct wm_adsp {
 	 * across power down.
 	 */
 	bool toggle_preload;
+	bool tuning_has_prefix;
 };
 
 struct wm_adsp_ops {

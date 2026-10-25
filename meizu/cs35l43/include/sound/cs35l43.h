@@ -123,6 +123,9 @@ struct cs35l43_private {
 	int slot_width;
 	int delta_requested;
 	int delta_applied;
+	u32 cal_r_sel;
+	u32 cal_ambient;
+	u32 register_buffer[32];
 	int low_pwr_mode;
 	bool first_event;
 	bool write_seq_initialized;

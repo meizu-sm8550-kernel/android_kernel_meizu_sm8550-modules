@@ -91,6 +91,7 @@ bool cs35l43_readable_reg(struct device *dev, unsigned int reg)
 	case CS35L43_REFCLK_INPUT:
 	case CS35L43_DSP_CLOCK_GEARING:
 	case CS35L43_GLOBAL_SAMPLE_RATE:
+	case CS35L43_FREERUN_FORCE:
 	case CS35L43_FS_MON_0:
 	case CS35L43_DSP1_SAMPLE_RATE_RX1:
 	case CS35L43_DSP1_SAMPLE_RATE_RX2:
@@ -279,6 +280,9 @@ bool cs35l43_precious_reg(struct device *dev, unsigned int reg)
 bool cs35l43_volatile_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
+	case CS35L43_PLL_OVERRIDE:
+	case CS35L43_FREERUN_FORCE:
+	case CS35L43_DAC_MSM_CONFIG:
 	case CS35L43_GLOBAL_STATUS:
 	case CS35L43_CHIP_STATUS:
 	case CS35L43_CHIP_STATUS2:

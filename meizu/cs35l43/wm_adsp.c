@@ -31,6 +31,7 @@
 #include <sound/tlv.h>
 
 #include "wm_adsp.h"
+#include "cs35l43-regmap.h"
 
 #define adsp_crit(_dsp, fmt, ...) \
 	dev_crit(_dsp->dev, "%s: " fmt, _dsp->name, ##__VA_ARGS__)
@@ -885,7 +886,7 @@ static void wm_adsp_read_fw_status(struct wm_adsp *dsp,
 	int ret;
 
 	for (i = 0; i < noffs; ++i) {
-		ret = regmap_read(dsp->regmap, dsp->base + offs[i], &offs[i]);
+		ret = cs35l43_reg_read(dsp->regmap, dsp->base + offs[i], &offs[i]);
 		if (ret) {
 			adsp_err(dsp, "Failed to read SCRATCH%u: %d\n", i, ret);
 			return;
@@ -991,7 +992,7 @@ static int wm_coeff_write_acked_control(struct wm_coeff_ctl *ctl,
 		 event_id, ctl->alg_region.alg,
 		 wm_adsp_mem_region_name(ctl->alg_region.type), ctl->offset);
 
-	ret = regmap_raw_write(dsp->regmap, reg, &val, sizeof(val));
+	ret = cs35l43_raw_write(dsp->regmap, reg, &val, sizeof(val));
 	if (ret) {
 		adsp_err(dsp, "Failed to write %x: %d\n", reg, ret);
 		return ret;
@@ -1015,7 +1016,7 @@ static int wm_coeff_write_acked_control(struct wm_coeff_ctl *ctl,
 			break;
 		}
 
-		ret = regmap_raw_read(dsp->regmap, reg, &val, sizeof(val));
+		ret = cs35l43_raw_read(dsp->regmap, reg, &val, sizeof(val), false);
 		if (ret) {
 			adsp_err(dsp, "Failed to read %x: %d\n", reg, ret);
 			return ret;
@@ -1051,7 +1052,7 @@ static int wm_coeff_write_ctrl_raw(struct wm_coeff_ctl *ctl,
 	if (!scratch)
 		return -ENOMEM;
 
-	ret = regmap_raw_write(dsp->regmap, reg, scratch,
+	ret = cs35l43_raw_write(dsp->regmap, reg, scratch,
 			       len);
 	if (ret) {
 		adsp_err(dsp, "Failed to write %zu bytes to %x: %d\n",
@@ -1159,7 +1160,7 @@ static int wm_coeff_read_ctrl_raw(struct wm_coeff_ctl *ctl,
 	if (!scratch)
 		return -ENOMEM;
 
-	ret = regmap_raw_read(dsp->regmap, reg, scratch, len);
+	ret = cs35l43_raw_read(dsp->regmap, reg, scratch, len, true);
 	if (ret) {
 		adsp_err(dsp, "Failed to read %zu bytes from %x: %d\n",
 			 len, reg, ret);
@@ -1982,7 +1983,7 @@ static int wm_adsp_load(struct wm_adsp *dsp)
 				goto out_fw;
 			}
 
-			ret = regmap_raw_write_async(regmap, reg, buf->buf,
+			ret = cs35l43_raw_write_async(regmap, reg, buf->buf,
 						     le32_to_cpu(region->len));
 			if (ret != 0) {
 				adsp_err(dsp,
@@ -2141,7 +2142,7 @@ static void *wm_adsp_read_algs(struct wm_adsp *dsp, size_t n_algs,
 	/* Read the terminator first to validate the length */
 	reg = dsp->ops->region_to_reg(mem, pos + len);
 
-	ret = regmap_raw_read(dsp->regmap, reg, &val, sizeof(val));
+	ret = cs35l43_raw_read(dsp->regmap, reg, &val, sizeof(val), false);
 	if (ret != 0) {
 		adsp_err(dsp, "Failed to read algorithm list end: %d\n",
 			ret);
@@ -2161,7 +2162,7 @@ static void *wm_adsp_read_algs(struct wm_adsp *dsp, size_t n_algs,
 
 	reg = dsp->ops->region_to_reg(mem, pos);
 
-	ret = regmap_raw_read(dsp->regmap, reg, alg, len);
+	ret = cs35l43_raw_read(dsp->regmap, reg, alg, len, false);
 	if (ret != 0) {
 		adsp_err(dsp, "Failed to read algorithm list: %d\n", ret);
 		kfree(alg);
@@ -2274,8 +2275,8 @@ static int wm_adsp1_setup_algs(struct wm_adsp *dsp)
 	if (WARN_ON(!mem))
 		return -EINVAL;
 
-	ret = regmap_raw_read(dsp->regmap, mem->base, &adsp1_id,
-			      sizeof(adsp1_id));
+	ret = cs35l43_raw_read(dsp->regmap, mem->base, &adsp1_id,
+			      sizeof(adsp1_id), false);
 	if (ret != 0) {
 		adsp_err(dsp, "Failed to read algorithm info: %d\n",
 			 ret);
@@ -2375,8 +2376,8 @@ static int wm_adsp2_setup_algs(struct wm_adsp *dsp)
 	if (WARN_ON(!mem))
 		return -EINVAL;
 
-	ret = regmap_raw_read(dsp->regmap, mem->base, &adsp2_id,
-			      sizeof(adsp2_id));
+	ret = cs35l43_raw_read(dsp->regmap, mem->base, &adsp2_id,
+			      sizeof(adsp2_id), false);
 	if (ret != 0) {
 		adsp_err(dsp, "Failed to read algorithm info: %d\n",
 			 ret);
@@ -2515,8 +2516,8 @@ static int wm_halo_setup_algs(struct wm_adsp *dsp)
 	if (WARN_ON(!mem))
 		return -EINVAL;
 
-	ret = regmap_raw_read(dsp->regmap, mem->base, &halo_id,
-			      sizeof(halo_id));
+	ret = cs35l43_raw_read(dsp->regmap, mem->base, &halo_id,
+			      sizeof(halo_id), false);
 	if (ret != 0) {
 		adsp_err(dsp, "Failed to read algorithm info: %d\n",
 			 ret);
@@ -2580,7 +2581,7 @@ int wm_adsp_load_coeff(struct wm_adsp *dsp)
 	if (file == NULL)
 		return -ENOMEM;
 
-	if (dsp->component->name_prefix)
+	if (dsp->tuning_has_prefix || dsp->component->name_prefix)
 		snprintf(file, PAGE_SIZE, "%s-%s-%s-%s.bin",
 			 dsp->component->name_prefix, dsp->part, dsp->fwf_name,
 			 wm_adsp_fw[dsp->fw].file);
@@ -2729,7 +2730,7 @@ int wm_adsp_load_coeff(struct wm_adsp *dsp)
 			adsp_dbg(dsp, "%s.%d: Writing %d bytes at %x\n",
 				 file, blocks, le32_to_cpu(blk->len),
 				 reg);
-			ret = regmap_raw_write_async(regmap, reg, buf->buf,
+			ret = cs35l43_raw_write_async(regmap, reg, buf->buf,
 						     le32_to_cpu(blk->len));
 			if (ret != 0) {
 				adsp_err(dsp,
@@ -2829,7 +2830,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
+		cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
 				   ADSP1_SYS_ENA, ADSP1_SYS_ENA);
 
 		/*
@@ -2837,7 +2838,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 		 * SYSCLK rate rather than making it configurable.
 		 */
 		if (dsp->sysclk_reg) {
-			ret = regmap_read(dsp->regmap, dsp->sysclk_reg, &val);
+			ret = cs35l43_reg_read(dsp->regmap, dsp->sysclk_reg, &val);
 			if (ret != 0) {
 				adsp_err(dsp, "Failed to read SYSCLK state: %d\n",
 				ret);
@@ -2846,7 +2847,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 
 			val = (val & dsp->sysclk_mask) >> dsp->sysclk_shift;
 
-			ret = regmap_update_bits(dsp->regmap,
+			ret = cs35l43_reg_update_bits(dsp->regmap,
 						 dsp->base + ADSP1_CONTROL_31,
 						 ADSP1_CLK_SEL_MASK, val);
 			if (ret != 0) {
@@ -2881,7 +2882,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 		dsp->booted = true;
 
 		/* Start the core running */
-		regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
+		cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
 				   ADSP1_CORE_ENA | ADSP1_START,
 				   ADSP1_CORE_ENA | ADSP1_START);
 
@@ -2893,13 +2894,13 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 		dsp->booted = false;
 
 		/* Halt the core */
-		regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
+		cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
 				   ADSP1_CORE_ENA | ADSP1_START, 0);
 
-		regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_19,
+		cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_19,
 				   ADSP1_WDMA_BUFFER_LENGTH_MASK, 0);
 
-		regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
+		cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
 				   ADSP1_SYS_ENA, 0);
 
 		list_for_each_entry(ctl, &dsp->ctl_list, list)
@@ -2918,7 +2919,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 	return 0;
 
 err_ena:
-	regmap_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP1_CONTROL_30,
 			   ADSP1_SYS_ENA, 0);
 err_mutex:
 	mutex_unlock(&dsp->pwr_lock);
@@ -2934,7 +2935,7 @@ static int wm_adsp2v2_enable_core(struct wm_adsp *dsp)
 
 	/* Wait for the RAM to start, should be near instantaneous */
 	for (count = 0; count < 10; ++count) {
-		ret = regmap_read(dsp->regmap, dsp->base + ADSP2_STATUS1, &val);
+		ret = cs35l43_reg_read(dsp->regmap, dsp->base + ADSP2_STATUS1, &val);
 		if (ret != 0)
 			return ret;
 
@@ -2987,8 +2988,8 @@ static int wm_adsp2_lock(struct wm_adsp *dsp, unsigned int lock_regions)
 			code0 |= ADSP2_LOCK_CODE_0 << ADSP2_LOCK_REGION_SHIFT;
 			code1 |= ADSP2_LOCK_CODE_1 << ADSP2_LOCK_REGION_SHIFT;
 		}
-		regmap_write(regmap, lock_reg, code0);
-		regmap_write(regmap, lock_reg, code1);
+		cs35l43_reg_write(regmap, lock_reg, code0);
+		cs35l43_reg_write(regmap, lock_reg, code1);
 		lock_regions >>= 2;
 		lock_reg += 2;
 	}
@@ -2998,31 +2999,31 @@ static int wm_adsp2_lock(struct wm_adsp *dsp, unsigned int lock_regions)
 
 static int wm_adsp2_enable_memory(struct wm_adsp *dsp)
 {
-	return regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+	return cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 				  ADSP2_MEM_ENA, ADSP2_MEM_ENA);
 }
 
 static void wm_adsp2_disable_memory(struct wm_adsp *dsp)
 {
-	regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 			   ADSP2_MEM_ENA, 0);
 }
 
 static void wm_adsp2_disable_core(struct wm_adsp *dsp)
 {
-	regmap_write(dsp->regmap, dsp->base + ADSP2_RDMA_CONFIG_1, 0);
-	regmap_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_1, 0);
-	regmap_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_2, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2_RDMA_CONFIG_1, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_1, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_2, 0);
 
-	regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 			   ADSP2_SYS_ENA, 0);
 }
 
 static void wm_adsp2v2_disable_core(struct wm_adsp *dsp)
 {
-	regmap_write(dsp->regmap, dsp->base + ADSP2_RDMA_CONFIG_1, 0);
-	regmap_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_1, 0);
-	regmap_write(dsp->regmap, dsp->base + ADSP2V2_WDMA_CONFIG_2, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2_RDMA_CONFIG_1, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2_WDMA_CONFIG_1, 0);
+	cs35l43_reg_write(dsp->regmap, dsp->base + ADSP2V2_WDMA_CONFIG_2, 0);
 }
 
 static void wm_adsp_boot_work(struct work_struct *work)
@@ -3120,7 +3121,7 @@ int wm_adsp2_set_dspclk(struct snd_soc_dapm_widget *w, unsigned int freq)
 	struct wm_adsp *dsp = &dsps[w->shift];
 	int ret;
 
-	ret = regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CLOCKING,
+	ret = cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CLOCKING,
 				 ADSP2_CLK_SEL_MASK,
 				 freq << ADSP2_CLK_SEL_SHIFT);
 	if (ret)
@@ -3182,13 +3183,13 @@ EXPORT_SYMBOL_GPL(wm_adsp2_preloader_put);
 
 static void wm_adsp_stop_watchdog(struct wm_adsp *dsp)
 {
-	regmap_update_bits(dsp->regmap, dsp->base + ADSP2_WATCHDOG,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_WATCHDOG,
 			   ADSP2_WDT_ENA_MASK, 0);
 }
 
 static void wm_halo_stop_watchdog(struct wm_adsp *dsp)
 {
-	regmap_update_bits(dsp->regmap, dsp->base + HALO_WDT_CONTROL,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + HALO_WDT_CONTROL,
 			   HALO_WDT_EN_MASK, 0);
 }
 
@@ -3236,14 +3237,14 @@ EXPORT_SYMBOL_GPL(wm_adsp_early_event);
 
 static int wm_adsp2_start_core(struct wm_adsp *dsp)
 {
-	return regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+	return cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 				 ADSP2_CORE_ENA | ADSP2_START,
 				 ADSP2_CORE_ENA | ADSP2_START);
 }
 
 static void wm_adsp2_stop_core(struct wm_adsp *dsp)
 {
-	regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 			   ADSP2_CORE_ENA | ADSP2_START, 0);
 }
 
@@ -3253,6 +3254,7 @@ int wm_adsp_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 	struct wm_adsp *dsps = snd_soc_component_get_drvdata(component);
 	struct wm_adsp *dsp = &dsps[w->shift];
+	__be32 cal_ambient = cpu_to_be32(30);
 	int ret;
 
 	switch (event) {
@@ -3271,6 +3273,9 @@ int wm_adsp_event(struct snd_soc_dapm_widget *w,
 			if (ret != 0)
 				goto err;
 		}
+
+		wm_adsp_write_ctl(dsp, "CAL_AMBIENT", WMFW_ADSP2_XM,
+				 0x5f210, &cal_ambient, sizeof(cal_ambient));
 
 		/* Sync set controls */
 		ret = wm_coeff_sync_controls(dsp);
@@ -3350,7 +3355,7 @@ EXPORT_SYMBOL_GPL(wm_adsp_event);
 
 static int wm_halo_start_core(struct wm_adsp *dsp)
 {
-	return regmap_update_bits(dsp->regmap,
+	return cs35l43_reg_update_bits(dsp->regmap,
 				  dsp->base + HALO_CCM_CORE_CONTROL,
 				  HALO_CORE_RESET | HALO_CORE_EN,
 				  HALO_CORE_RESET | HALO_CORE_EN);
@@ -3358,11 +3363,11 @@ static int wm_halo_start_core(struct wm_adsp *dsp)
 
 static void wm_halo_stop_core(struct wm_adsp *dsp)
 {
-	regmap_update_bits(dsp->regmap, dsp->base + HALO_CCM_CORE_CONTROL,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + HALO_CCM_CORE_CONTROL,
 			   HALO_CORE_EN, 0);
 
 	/* reset halo core with CORE_SOFT_RESET */
-	regmap_update_bits(dsp->regmap, dsp->base + HALO_CORE_SOFT_RESET,
+	cs35l43_reg_update_bits(dsp->regmap, dsp->base + HALO_CORE_SOFT_RESET,
 			   HALO_CORE_SOFT_RESET_MASK, 1);
 }
 
@@ -3403,7 +3408,7 @@ int wm_adsp2_init(struct wm_adsp *dsp)
 		 * Disable the DSP memory by default when in reset for a small
 		 * power saving.
 		 */
-		ret = regmap_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
+		ret = cs35l43_reg_update_bits(dsp->regmap, dsp->base + ADSP2_CONTROL,
 					 ADSP2_MEM_ENA, 0);
 		if (ret) {
 			adsp_err(dsp,
@@ -3692,8 +3697,8 @@ static int wm_adsp_read_raw_data_block(struct wm_adsp *dsp, int mem_type,
 
 	reg = dsp->ops->region_to_reg(mem, mem_addr);
 
-	ret = regmap_raw_read(dsp->regmap, reg, data,
-			      sizeof(*data) * num_words);
+	ret = cs35l43_raw_read(dsp->regmap, reg, data,
+			      sizeof(*data) * num_words, true);
 	if (ret < 0)
 		return ret;
 
@@ -3727,7 +3732,7 @@ static int wm_adsp_write_data_word(struct wm_adsp *dsp, int mem_type,
 
 	reg = dsp->ops->region_to_reg(mem, mem_addr);
 
-	return regmap_raw_write(dsp->regmap, reg, &val, sizeof(val));
+	return cs35l43_raw_write(dsp->regmap, reg, &val, sizeof(val));
 }
 
 static inline int wm_adsp_buffer_read(struct wm_adsp_compr_buf *buf,
@@ -3900,7 +3905,7 @@ static int wm_adsp_buffer_parse_coeff(struct wm_coeff_ctl *ctl)
 		return ret;
 
 	for (i = 0; i < 5; ++i) {
-		ret = regmap_raw_read(ctl->dsp->regmap, reg, &bufp, sizeof(bufp));
+		ret = cs35l43_raw_read(ctl->dsp->regmap, reg, &bufp, sizeof(bufp), false);
 		if (ret < 0)
 			return ret;
 
@@ -3933,8 +3938,8 @@ static int wm_adsp_buffer_parse_coeff(struct wm_coeff_ctl *ctl)
 	if (ctl->len == 4)
 		goto done;
 
-	ret = regmap_raw_read(ctl->dsp->regmap, reg, &coeff_v1,
-			      sizeof(coeff_v1));
+	ret = cs35l43_raw_read(ctl->dsp->regmap, reg, &coeff_v1,
+			      sizeof(coeff_v1), false);
 	if (ret < 0)
 		goto err;
 
@@ -4402,7 +4407,7 @@ irqreturn_t wm_adsp2_bus_error(int irq, void *data)
 
 	mutex_lock(&dsp->pwr_lock);
 
-	ret = regmap_read(regmap, dsp->base + ADSP2_LOCK_REGION_CTRL, &val);
+	ret = cs35l43_reg_read(regmap, dsp->base + ADSP2_LOCK_REGION_CTRL, &val);
 	if (ret) {
 		adsp_err(dsp,
 			"Failed to read Region Lock Ctrl register: %d\n", ret);
@@ -4421,7 +4426,7 @@ irqreturn_t wm_adsp2_bus_error(int irq, void *data)
 		else
 			adsp_err(dsp, "bus error: region lock error\n");
 
-		ret = regmap_read(regmap, dsp->base + ADSP2_BUS_ERR_ADDR, &val);
+		ret = cs35l43_reg_read(regmap, dsp->base + ADSP2_BUS_ERR_ADDR, &val);
 		if (ret) {
 			adsp_err(dsp,
 				 "Failed to read Bus Err Addr register: %d\n",
@@ -4432,7 +4437,7 @@ irqreturn_t wm_adsp2_bus_error(int irq, void *data)
 		adsp_err(dsp, "bus error address = 0x%x\n",
 			 val & ADSP2_BUS_ERR_ADDR_MASK);
 
-		ret = regmap_read(regmap,
+		ret = cs35l43_reg_read(regmap,
 				  dsp->base + ADSP2_PMEM_ERR_ADDR_XMEM_ERR_ADDR,
 				  &val);
 		if (ret) {
@@ -4449,7 +4454,7 @@ irqreturn_t wm_adsp2_bus_error(int irq, void *data)
 			 ADSP2_PMEM_ERR_ADDR_SHIFT);
 	}
 
-	regmap_update_bits(regmap, dsp->base + ADSP2_LOCK_REGION_CTRL,
+	cs35l43_reg_update_bits(regmap, dsp->base + ADSP2_LOCK_REGION_CTRL,
 			   ADSP2_CTRL_ERR_EINT, ADSP2_CTRL_ERR_EINT);
 
 error:
@@ -4473,7 +4478,7 @@ irqreturn_t wm_halo_bus_error(int irq, void *data)
 
 	mutex_lock(&dsp->pwr_lock);
 
-	ret = regmap_read(regmap, dsp->base_sysinfo + HALO_AHBM_WINDOW_DEBUG_1,
+	ret = cs35l43_reg_read(regmap, dsp->base_sysinfo + HALO_AHBM_WINDOW_DEBUG_1,
 			  fault);
 	if (ret) {
 		adsp_warn(dsp, "Failed to read AHB DEBUG_1: %d\n", ret);
@@ -4485,7 +4490,7 @@ irqreturn_t wm_halo_bus_error(int irq, void *data)
 		  (*fault & HALO_AHBM_CORE_ERR_ADDR_MASK) >>
 		  HALO_AHBM_CORE_ERR_ADDR_SHIFT);
 
-	ret = regmap_read(regmap, dsp->base_sysinfo + HALO_AHBM_WINDOW_DEBUG_0,
+	ret = cs35l43_reg_read(regmap, dsp->base_sysinfo + HALO_AHBM_WINDOW_DEBUG_0,
 			  fault);
 	if (ret) {
 		adsp_warn(dsp, "Failed to read AHB DEBUG_0: %d\n", ret);
