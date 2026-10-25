@@ -48,6 +48,7 @@
 #include <linux/compat.h>
 #endif
 #include "common.h"
+#include "meizu_info_compat.h"
 
 /**
  * i2c_disable_irq()
@@ -575,12 +576,22 @@ static struct i2c_driver nfc_i2c_dev_driver = {
 
 MODULE_DEVICE_TABLE(of, nfc_i2c_dev_match_table);
 
+static bool nfc_i2c_driver_registered;
+
 static int __init nfc_i2c_dev_init(void)
 {
 	int ret = 0;
+	int rf_id = nfc_read_rf_id();
 
-	pr_info("%s: Loading NXP NFC I2C driver\n", __func__);
+	if (rf_id != MEIZU_NFC_RF_ID_NXP) {
+		pr_info("%s: Skipping NXP NFC for RF-ID %d\n", __func__, rf_id);
+		return 0;
+	}
+
+	pr_info("%s: Loading NXP NFC I2C driver for RF-ID %d\n",
+		__func__, rf_id);
 	ret = i2c_add_driver(&nfc_i2c_dev_driver);
+	nfc_i2c_driver_registered = !ret;
 	if (ret != 0)
 		pr_err("%s: NFC I2C add driver error ret %d\n", __func__, ret);
 	return ret;
@@ -590,6 +601,9 @@ module_init(nfc_i2c_dev_init);
 
 static void __exit nfc_i2c_dev_exit(void)
 {
+	if (!nfc_i2c_driver_registered)
+		return;
+
 	pr_info("%s: Unloading NXP NFC I2C driver\n", __func__);
 	i2c_del_driver(&nfc_i2c_dev_driver);
 }

@@ -2,6 +2,8 @@
 
 include $(NFC_ROOT)/config/gki_nfc.conf
 
+ccflags-y += -I$(NFC_ROOT)/../../../meizu/compat
+
 LINUXINCLUDE    += -I$(NFC_ROOT)/include/uapi/linux/nfc
 
 LINUXINCLUDE   += -include $(NFC_ROOT)/config/gki_nfc_conf.h

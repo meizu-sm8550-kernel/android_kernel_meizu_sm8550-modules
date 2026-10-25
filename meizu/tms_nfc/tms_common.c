@@ -4,10 +4,12 @@
  */
 
 #include "tms_common.h"
+#include "meizu_info_compat.h"
 
 /*********** PART0: Global Variables Area ***********/
 struct tms_info tms = {0};
 unsigned int shutdown = 0;
+static bool tms_driver_registered;
 
 /*********** PART1: Declare Area ***********/
 
@@ -199,6 +201,14 @@ static void tms_common_remove(void)
 static int __init tms_driver_init(void)
 {
     int ret = 0;
+    int rf_id = nfc_read_rf_id();
+
+    if (rf_id == MEIZU_NFC_RF_ID_NXP) {
+        TMS_INFO("Skipping TMS NFC for RF-ID %d\n", rf_id);
+        return 0;
+    }
+
+    TMS_INFO("Loading TMS NFC for RF-ID %d\n", rf_id);
 
     TMS_INFO("Kernel : %d.%d.%d, Driver version : %x\n",
              (LINUX_VERSION_CODE >> 16) & 0xFFFF,
@@ -212,6 +222,7 @@ static int __init tms_driver_init(void)
     }
 
     ret = nfc_driver_init();
+    tms_driver_registered = !ret;
 err:
     if (ret)
         tms_common_remove();
@@ -220,6 +231,9 @@ err:
 
 static void __exit tms_driver_exit(void)
 {
+    if (!tms_driver_registered)
+        return;
+
     TMS_INFO("Enter\n");
     nfc_driver_exit();
 

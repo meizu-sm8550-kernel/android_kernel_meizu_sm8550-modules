@@ -12,3 +12,6 @@ tms_device_modules-y := tms_common.o \
 
 tms_nfc_src := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
 ccflags-y += -I$(tms_nfc_src) -I$(tms_nfc_src)/nfc -I$(tms_nfc_src)/debuger
+ccflags-y += -I$(tms_nfc_src)/../compat
+
+KBUILD_EXTRA_SYMBOLS += $(obj)/../compat/Module.symvers
