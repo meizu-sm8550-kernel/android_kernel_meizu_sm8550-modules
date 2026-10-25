@@ -2609,8 +2609,8 @@ static void goodix_ts_fill_qts_vendor_data(struct qts_vendor_data *qts_vendor_da
 	}
 
 	qts_vendor_data->vendor_data = core_data;
-	qts_vendor_data->schedule_suspend = false;
-	qts_vendor_data->schedule_resume = false;
+	qts_vendor_data->schedule_suspend = core_data->is_m2468;
+	qts_vendor_data->schedule_resume = core_data->is_m2468;
 	qts_vendor_data->qts_vendor_ops.suspend = goodix_ts_suspend_helper;
 	qts_vendor_data->qts_vendor_ops.resume = goodix_ts_resume_helper;
 	qts_vendor_data->qts_vendor_ops.enable_touch_irq = goodix_ts_enable_touch_irq;

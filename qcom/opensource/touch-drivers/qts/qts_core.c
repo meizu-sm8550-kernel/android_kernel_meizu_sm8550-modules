@@ -1823,27 +1823,31 @@ int qts_client_register(struct qts_vendor_data qts_vendor_data)
 		qts_create_sysfs(qts_data);
 
 	mutex_init(&qts_data->transition_lock);
-	qts_ts_register_for_panel_events(qts_data);
-	qts_vendor_data.notifier_cookie = qts_data->notifier_cookie;
 
 #ifdef CONFIG_ARCH_QTI_VM
 	atomic_set(&qts_data->delayed_tvm_probe_pending, 1);
-	goto qts_register_end;
 #else
 	atomic_set(&qts_data->delayed_pvm_probe_pending, 1);
-#endif
 
 	qts_power_source_init(qts_data);
+#endif
 
 	qts_data->ts_workqueue = create_singlethread_workqueue("qts_wq");
-	if (!qts_data->ts_workqueue)
+	if (!qts_data->ts_workqueue) {
 		pr_err("create qts workqueue fail\n");
+		qts_data->schedule_resume = false;
+		qts_data->schedule_suspend = false;
+	}
 
 	if (qts_data->ts_workqueue && qts_data->schedule_resume)
 		INIT_WORK(&qts_data->resume_work, qts_resume_work);
 
 	if (qts_data->ts_workqueue && qts_data->schedule_suspend)
 		INIT_WORK(&qts_data->suspend_work, qts_suspend_work);
+
+	/* Publish the notifier only after its work items are ready. */
+	qts_ts_register_for_panel_events(qts_data);
+	qts_vendor_data.notifier_cookie = qts_data->notifier_cookie;
 
 qts_register_end:
 	pr_debug("client register end\n");
