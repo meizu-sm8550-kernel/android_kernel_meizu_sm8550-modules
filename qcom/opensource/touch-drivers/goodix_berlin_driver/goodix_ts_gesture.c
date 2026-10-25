@@ -67,6 +67,7 @@ static void gsx_release_fod(struct gesture_module *gsx)
 
 	if (!gsx->fod_pressed)
 		return;
+	input_report_key(cd->input_dev, GOODIX_M2468_FOD_KEY, 0);
 	input_report_key(cd->input_dev, BTN_TOUCH, 0);
 	input_mt_slot(cd->input_dev, 0);
 	input_mt_report_slot_state(cd->input_dev, MT_TOOL_FINGER, false);
@@ -422,6 +423,8 @@ static int gsx_m2468_ist(struct goodix_ts_core *cd,
 		input_report_abs(cd->input_dev, ABS_MT_POSITION_Y, y);
 		input_report_abs(cd->input_dev, ABS_MT_WIDTH_MAJOR,
 				 event.gesture_data[4]);
+		input_sync(cd->input_dev);
+		input_report_key(cd->input_dev, GOODIX_M2468_FOD_KEY, 1);
 		input_sync(cd->input_dev);
 		gsx->fod_pressed = true;
 		mod_delayed_work(system_wq, &gsx->fod_up_work,

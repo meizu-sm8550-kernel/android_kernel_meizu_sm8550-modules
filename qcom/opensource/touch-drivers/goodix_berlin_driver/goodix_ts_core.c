@@ -1592,6 +1592,7 @@ static int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 		input_set_abs_params(input_dev, ABS_MT_WIDTH_MAJOR,
 				     0, ts_bdata->panel_max_w, 0, 0);
 		input_set_capability(input_dev, EV_KEY, KEY_NEXT_FAVORITE);
+		input_set_capability(input_dev, EV_KEY, GOODIX_M2468_FOD_KEY);
 	}
 #ifdef INPUT_TYPE_B_PROTOCOL
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 7, 0)
@@ -2045,13 +2046,13 @@ static void goodix_panel_notifier_callback(enum panel_event_notifier_tag tag,
 			goodix_ts_resume(core_data);
 		break;
 
+	case DRM_PANEL_EVENT_BLANK_LP:
+		if (!core_data->is_m2468)
+			break;
+		fallthrough;
 	case DRM_PANEL_EVENT_BLANK:
 		if (notification->notif_data.early_trigger)
 			goodix_ts_suspend(core_data);
-		break;
-
-	case DRM_PANEL_EVENT_BLANK_LP:
-		ts_debug("received lp event\n");
 		break;
 
 	case DRM_PANEL_EVENT_FPS_CHANGE:
