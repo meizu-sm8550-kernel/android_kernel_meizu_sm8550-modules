@@ -8699,6 +8699,8 @@ int dsi_display_enable(struct dsi_display *display)
 		}
 
 		display->panel->panel_initialized = true;
+		if (display->panel->m2468_bl.supported)
+			display->panel->power_mode = SDE_MODE_DPMS_ON;
 		DSI_DEBUG("cont splash enabled, display enable not required\n");
 		dsi_display_panel_id_notification(display);
 
