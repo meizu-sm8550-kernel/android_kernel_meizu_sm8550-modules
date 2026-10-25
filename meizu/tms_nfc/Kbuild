@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0+
+
+obj-m += tms_device_modules.o
+
+tms_device_modules-y := tms_common.o \
+                        debuger/debuger.o \
+                        debuger/logger.o \
+                        debuger/checker.o \
+                        nfc/nfc_chip.o \
+                        nfc/nfc_common.o \
+                        nfc/nfc_driver.o
+
+tms_nfc_src := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
+ccflags-y += -I$(tms_nfc_src) -I$(tms_nfc_src)/nfc -I$(tms_nfc_src)/debuger
