@@ -690,6 +690,11 @@ int gesture_module_init(struct goodix_ts_core *cd)
 		gesture_module_exit();
 		return ret;
 	}
+	if (cd->is_m2468) {
+		ret = kobject_uevent(def_kobj, KOBJ_CHANGE);
+		if (ret)
+			ts_err("failed send gesture uevent, ret:%d", ret);
+	}
 	ts_info("gesture module init success");
 
 	return 0;
